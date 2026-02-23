@@ -1,0 +1,179 @@
+.row-sections-container {
+  margin-top: 2rem;
+}
+
+.row-sections-container h3 {
+  margin-bottom: 1rem;
+}
+
+.row-sections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.row-section-card {
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.row-section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: #f8f9fa;
+  border-bottom: 1px solid #dee2e6;
+  flex-wrap: wrap;
+}
+
+.expand-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #495057;
+  padding: 0.1rem 0.3rem;
+  flex-shrink: 0;
+}
+
+.expand-btn:hover {
+  color: #007bff;
+}
+
+.row-section-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.section-code {
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #343a40;
+}
+
+.section-title {
+  font-size: 0.9rem;
+}
+
+.section-title-ru {
+  color: #e67e22;
+}
+
+.section-title-en {
+  color: #6c757d;
+}
+
+.section-fields-count {
+  color: #adb5bd;
+  font-size: 0.85rem;
+}
+
+.row-section-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.row-section-edit-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.row-section-edit-header label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  color: #495057;
+}
+
+.section-input {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  background-color: Field;
+  color: FieldText;
+  min-width: 140px;
+}
+
+.section-header-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.row-section-body {
+  padding: 1rem;
+}
+
+.row-section-no-fields {
+  color: #6c757d;
+  font-style: italic;
+  font-size: 0.9rem;
+}
+
+/* Кнопки: используем те же классы что в FieldsTable */
+.row-section-header .edit-btn {
+  padding: 0.3rem 0.7rem;
+  background: #6c757d;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.row-section-header .edit-btn:hover {
+  background: #5a6268;
+}
+
+.row-section-header .delete-btn {
+  padding: 0.3rem 0.7rem;
+  background: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.row-section-header .delete-btn:hover {
+  background: #c82333;
+}
+
+.section-header-actions .save-btn {
+  padding: 0.3rem 0.7rem;
+  background: #28a745;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.section-header-actions .save-btn:hover {
+  background: #218838;
+}
+
+.section-header-actions .cancel-btn {
+  padding: 0.3rem 0.7rem;
+  background: #6c757d;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.section-header-actions .cancel-btn:hover {
+  background: #5a6268;
+}

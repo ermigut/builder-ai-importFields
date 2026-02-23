@@ -1,0 +1,126 @@
+.searchable-select {
+  position: relative;
+  width: 100%;
+}
+
+.searchable-select__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.65rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background-color: Field;
+  color: FieldText;
+  cursor: pointer;
+  font-size: 1rem;
+  min-height: 1.2em;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+
+.searchable-select__trigger:hover {
+  border-color: #aaa;
+}
+
+.searchable-select__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.searchable-select__placeholder {
+  color: GrayText;
+  flex: 1;
+}
+
+.searchable-select__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.5rem;
+  flex-shrink: 0;
+}
+
+.searchable-select__clear {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  color: GrayText;
+  cursor: pointer;
+  padding: 0 0.2rem;
+  line-height: 1;
+}
+
+.searchable-select__clear:hover {
+  color: #dc3545;
+}
+
+.searchable-select__arrow {
+  font-size: 0.6rem;
+  color: GrayText;
+}
+
+.searchable-select__dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 2px;
+  background-color: Field;
+  color: FieldText;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+}
+
+.searchable-select__search {
+  width: 100%;
+  padding: 0.6rem;
+  border: none;
+  border-bottom: 1px solid #ddd;
+  font-size: 0.95rem;
+  outline: none;
+  box-sizing: border-box;
+  background-color: Field;
+  color: FieldText;
+}
+
+.searchable-select__search::placeholder {
+  color: GrayText;
+}
+
+.searchable-select__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.searchable-select__item {
+  padding: 0.55rem 0.7rem;
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: background-color 0.1s;
+}
+
+.searchable-select__item:hover {
+  background-color: Highlight;
+  color: HighlightText;
+}
+
+.searchable-select__item.selected {
+  background-color: Highlight;
+  color: HighlightText;
+  font-weight: 600;
+}
+
+.searchable-select__empty {
+  padding: 0.7rem;
+  color: GrayText;
+  text-align: center;
+  font-size: 0.9rem;
+}

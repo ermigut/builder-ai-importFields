@@ -1,0 +1,114 @@
+.request-config-editor {
+  background: white;
+  padding: 1.5rem;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  margin-bottom: 2rem;
+}
+
+.request-config-editor h3 {
+  margin: 0 0 1rem 0;
+  color: #333;
+}
+
+.config-section {
+  margin-bottom: 1rem;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.section-header {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background-color: #f8f9fa;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  color: #333;
+  transition: background-color 0.2s;
+}
+
+.section-header:hover {
+  background-color: #e9ecef;
+}
+
+.section-header span:first-child {
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.section-content {
+  padding: 1rem;
+  background: white;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  color: #555;
+}
+
+.required-marker {
+  color: #dc3545;
+  font-weight: bold;
+}
+
+.config-input,
+.config-select {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  box-sizing: border-box;
+}
+
+.config-input:focus,
+.config-select:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.1);
+}
+
+.config-input.error {
+  border-color: #dc3545;
+}
+
+.fields-list {
+  margin-top: 1rem;
+}
+
+.field-item {
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  color: #333;
+  border: 1px solid #dee2e6;
+  min-height: 2rem;
+  display: block;
+}
+
+.empty-message {
+  padding: 1rem;
+  text-align: center;
+  color: #666;
+  font-style: italic;
+}
+
+.fields-list h4 {
+  margin: 0 0 0.5rem 0;
+  color: #333;
+  font-size: 1rem;
+}
