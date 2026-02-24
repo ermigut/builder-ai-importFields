@@ -15,12 +15,30 @@ import './ConfigBuilderPage.css';
 function rebuildRequestFields(fields, rowSections, currentRequest) {
   // Сохраняем formatCfg существующих полей (key → formatCfg)
   const formatCfgByCode = new Map();
+  // Сохраняем formatCfg дочерних полей row sections (parentKey.childKey → formatCfg)
+  const childFormatCfgByPath = new Map();
   (currentRequest?.fields || []).forEach(rf => {
     if (rf.data?.key && rf.data?.formatCfg) {
       const code = rf.data.key.replace(/\./g, '__');
       formatCfgByCode.set(code, rf.data.formatCfg);
     }
+    if (rf.data?.valueType === 99) {
+      const parentKey = rf.data?.key || '';
+      (rf.children || []).forEach(child => {
+        if (child.data?.key && child.data?.formatCfg) {
+          childFormatCfgByPath.set(`${parentKey}.${child.data.key}`, child.data.formatCfg);
+        }
+      });
+    }
   });
+
+  // Вычисляет formatCfg по valueType для типов, где он детерминирован
+  function getFormatCfgForValueType(valueType) {
+    if (valueType === 9 || valueType === 101 || valueType === 102) {
+      return { valueType };
+    }
+    return null;
+  }
 
   const newRequestFields = [];
   const newResponseFields = [];
@@ -75,18 +93,24 @@ function rebuildRequestFields(fields, rowSections, currentRequest) {
 
     if (editableFields.length > 0) {
       newRequestFields.push({
-        children: editableFields.map(field => ({
-          children: [],
-          cfsMappings: [],
-          data: {
-            defaultValue: '',
-            formatCfg: null,
-            key: fieldCodeToKey(field.data?.code || ''),
-            required: field.data?.required || false,
-            value: `{{item.${field.data?.code || ''}}}`,
-            valueType: field.data?.valueType || 1,
-          },
-        })),
+        children: editableFields.map(field => {
+          const childKey = fieldCodeToKey(field.data?.code || '');
+          const valueType = field.data?.valueType || 1;
+          const formatCfg = childFormatCfgByPath.get(`${arrayKeyPath}.${childKey}`)
+            ?? getFormatCfgForValueType(valueType);
+          return {
+            children: [],
+            cfsMappings: [],
+            data: {
+              defaultValue: '',
+              formatCfg,
+              key: childKey,
+              required: field.data?.required || false,
+              value: `{{item.${field.data?.code || ''}}}`,
+              valueType,
+            },
+          };
+        }),
         cfsMappings: [],
         data: {
           defaultValue: '',

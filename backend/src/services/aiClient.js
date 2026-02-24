@@ -794,7 +794,21 @@ export async function generateTargetJson(sourceType, sourceValue) {
 
   // Применяем formatCfg к request.fields (для DateTime, Date, Boolean, Array типов)
   result.request.fields = result.request.fields.map(requestField => {
-    if (!requestField.data || requestField.data.valueType === 99) return requestField;
+    if (!requestField.data) return requestField;
+
+    // Для row section (valueType=99) применяем formatCfg к дочерним полям
+    if (requestField.data.valueType === 99) {
+      requestField.children = (requestField.children || []).map(child => {
+        if (!child.data) return child;
+        let childValueType = child.data.valueType;
+        const childKey = child.data.key;
+        const formatCfg = detectFormatCfg(childValueType, childKey, sourceJson);
+        if (formatCfg) child.data.formatCfg = formatCfg;
+        return child;
+      });
+      return requestField;
+    }
+
     let valueType = requestField.data.valueType;
     const key = requestField.data.key;
 
