@@ -6,9 +6,42 @@
   margin-bottom: 2rem;
 }
 
-.fields-table-container h3 {
-  margin: 0 0 1rem 0;
+.fields-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.fields-table-header h3 {
+  margin: 0;
   color: #333;
+}
+
+.fields-table-footer {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 0.75rem;
+}
+
+.add-field-btn {
+  padding: 0.4rem 0.9rem;
+  background-color: #28a745;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.add-field-btn:hover:not(:disabled) {
+  background-color: #218838;
+}
+
+.add-field-btn:disabled {
+  background-color: #94d3a2;
+  cursor: default;
 }
 
 .fields-table-empty {

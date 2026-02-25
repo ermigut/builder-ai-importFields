@@ -24,9 +24,28 @@ import './FieldsTable.css';
  * @param {Field[]} props.fields - Массив полей
  * @param {Function} props.onFieldsChange - Callback при изменении полей
  */
+const NEW_FIELD_TEMPLATE = {
+  id: null,
+  versionId: null,
+  data: {
+    code: '',
+    valueType: 1,
+    required: false,
+    isEditable: true,
+    dateCreated: '',
+  },
+  enumId: null,
+  titleEn: null,
+  titleRu: null,
+  hintEn: null,
+  hintRu: null,
+};
+
 function FieldsTable({ fields = [], onFieldsChange }) {
   const [editingIndex, setEditingIndex] = useState(null);
   const [editedField, setEditedField] = useState(null);
+  const [isAdding, setIsAdding] = useState(false);
+  const [newField, setNewField] = useState(null);
   
   // Логирование для отладки
   console.log('FieldsTable received fields:', fields);
@@ -84,6 +103,37 @@ function FieldsTable({ fields = [], onFieldsChange }) {
     }
   };
 
+  const handleAddNew = () => {
+    setEditingIndex(null);
+    setEditedField(null);
+    setNewField({ ...NEW_FIELD_TEMPLATE, data: { ...NEW_FIELD_TEMPLATE.data } });
+    setIsAdding(true);
+  };
+
+  const handleSaveNew = () => {
+    if (!newField.data?.code || newField.data.code.trim() === '') {
+      alert('Поле "Код" является обязательным');
+      return;
+    }
+    onFieldsChange([...safeFields, newField]);
+    setIsAdding(false);
+    setNewField(null);
+  };
+
+  const handleCancelNew = () => {
+    setIsAdding(false);
+    setNewField(null);
+  };
+
+  const handleNewFieldChange = (key, value) => {
+    if (key.startsWith('data.')) {
+      const dataKey = key.replace('data.', '');
+      setNewField(prev => ({ ...prev, data: { ...prev.data, [dataKey]: value } }));
+    } else {
+      setNewField(prev => ({ ...prev, [key]: value }));
+    }
+  };
+
   const handleToggleAll = (dataKey) => {
     const label = dataKey === 'required' ? 'обязательными' : 'редактируемыми';
     const choice = window.confirm(
@@ -114,13 +164,24 @@ function FieldsTable({ fields = [], onFieldsChange }) {
     }
   };
 
-  if (safeFields.length === 0) {
-    return <div className="fields-table-empty">Нет полей для отображения</div>;
+  if (safeFields.length === 0 && !isAdding) {
+    return (
+      <div className="fields-table-container">
+        <div className="fields-table-header">
+          <h3>Поля (Fields)</h3>
+          <button onClick={handleAddNew} className="add-field-btn">+ Добавить поле</button>
+        </div>
+        <div className="fields-table-empty">Нет полей для отображения</div>
+      </div>
+    );
   }
 
   return (
     <div className="fields-table-container">
-      <h3>Поля (Fields)</h3>
+      <div className="fields-table-header">
+        <h3>Поля (Fields)</h3>
+        <button onClick={handleAddNew} className="add-field-btn" disabled={isAdding}>+ Добавить поле</button>
+      </div>
       <table className="fields-table">
         <thead>
           <tr>
@@ -249,8 +310,80 @@ function FieldsTable({ fields = [], onFieldsChange }) {
             </tr>
             );
           })}
+          {isAdding && newField && (
+            <tr className="editing">
+              <td>
+                <input
+                  type="text"
+                  value={newField.data.code || ''}
+                  onChange={(e) => handleNewFieldChange('data.code', e.target.value)}
+                  className={`field-input ${!newField.data.code ? 'error' : ''}`}
+                  placeholder="Обязательное поле"
+                  autoFocus
+                />
+              </td>
+              <td>
+                <select
+                  value={newField.data.valueType || 1}
+                  onChange={(e) => handleNewFieldChange('data.valueType', parseInt(e.target.value))}
+                  className="field-select"
+                >
+                  <option value={1}>String</option>
+                  <option value={2}>Int</option>
+                  <option value={3}>Decimal</option>
+                  <option value={5}>DateTime</option>
+                  <option value={7}>File</option>
+                  <option value={8}>Date</option>
+                  <option value={9}>Boolean</option>
+                  <option value={101}>StringArray</option>
+                  <option value={102}>IntArray</option>
+                </select>
+              </td>
+              <td>
+                <input
+                  type="checkbox"
+                  checked={newField.data.required || false}
+                  onChange={(e) => handleNewFieldChange('data.required', e.target.checked)}
+                  className="field-checkbox"
+                />
+              </td>
+              <td>
+                <input
+                  type="checkbox"
+                  checked={newField.data.isEditable || false}
+                  onChange={(e) => handleNewFieldChange('data.isEditable', e.target.checked)}
+                  className="field-checkbox"
+                />
+              </td>
+              <td>
+                <input
+                  type="text"
+                  value={newField.titleRu || ''}
+                  onChange={(e) => handleNewFieldChange('titleRu', e.target.value || null)}
+                  className="field-input"
+                />
+              </td>
+              <td>
+                <input
+                  type="text"
+                  value={newField.titleEn || ''}
+                  onChange={(e) => handleNewFieldChange('titleEn', e.target.value || null)}
+                  className="field-input"
+                />
+              </td>
+              <td>
+                <div className="action-buttons-cell">
+                  <button onClick={handleSaveNew} className="save-btn">Сохранить</button>
+                  <button onClick={handleCancelNew} className="cancel-btn">Отмена</button>
+                </div>
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
+      <div className="fields-table-footer">
+        <button onClick={handleAddNew} className="add-field-btn" disabled={isAdding}>+ Добавить поле</button>
+      </div>
     </div>
   );
 }
