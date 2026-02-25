@@ -162,13 +162,21 @@ function ConfigBuilderPage() {
     return storedUser ? JSON.parse(storedUser) : null;
   });
   // Авторизация Albato
-  const [domainZone, setDomainZone] = useState('.ru'); // '.ru' или '.com'
-  const [authMethod, setAuthMethod] = useState('credentials'); // 'credentials' или 'manual'
+  const [domainZone, setDomainZone] = useState(() => localStorage.getItem('albato_domainZone') || '.ru');
+  const [authMethod, setAuthMethod] = useState(() => localStorage.getItem('albato_authMethod') || 'credentials');
   const [albatoEmail, setAlbatoEmail] = useState('');
   const [albatoPassword, setAlbatoPassword] = useState('');
   const [manualToken, setManualToken] = useState('');
-  const [albatoToken, setAlbatoToken] = useState(''); // Полученный или введённый токен
+  const [albatoToken, setAlbatoToken] = useState(() => localStorage.getItem('albato_token') || '');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
+
+  // Синхронизация авторизации Albato с localStorage
+  useEffect(() => {
+    if (albatoToken) localStorage.setItem('albato_token', albatoToken);
+    else localStorage.removeItem('albato_token');
+  }, [albatoToken]);
+  useEffect(() => { localStorage.setItem('albato_domainZone', domainZone); }, [domainZone]);
+  useEffect(() => { localStorage.setItem('albato_authMethod', authMethod); }, [authMethod]);
 
   // Списки из Albato API
   const [albatoApps, setAlbatoApps] = useState([]);
