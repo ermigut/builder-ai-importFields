@@ -10,7 +10,7 @@ import './SearchableSelect.css';
  * @param {string} props.placeholder - Плейсхолдер
  * @param {string} [props.id] - HTML id
  */
-function SearchableSelect({ options = [], value, onChange, placeholder = 'Выберите...', id }) {
+function SearchableSelect({ options = [], value, onChange, placeholder = 'Выберите...', id, onRefresh, isRefreshing = false }) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
   const containerRef = useRef(null);
@@ -69,14 +69,26 @@ function SearchableSelect({ options = [], value, onChange, placeholder = 'Выб
 
       {isOpen && (
         <div className="searchable-select__dropdown">
-          <input
-            ref={inputRef}
-            type="text"
-            className="searchable-select__search"
-            placeholder="Поиск..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <div className="searchable-select__search-row">
+            <input
+              ref={inputRef}
+              type="text"
+              className="searchable-select__search"
+              placeholder="Поиск..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {onRefresh && (
+              <button
+                className="searchable-select__refresh"
+                onClick={(e) => { e.stopPropagation(); onRefresh(); }}
+                disabled={isRefreshing}
+                title="Обновить список"
+              >
+                <span className={isRefreshing ? 'refreshing' : ''}>↻</span>
+              </button>
+            )}
+          </div>
           <ul className="searchable-select__list">
             {filtered.length > 0 ? (
               filtered.map(option => (

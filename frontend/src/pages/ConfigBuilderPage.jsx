@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import SourceInputSwitcher from '../components/SourceInputSwitcher';
 import FieldsTable from '../components/FieldsTable';
@@ -282,6 +282,23 @@ function ConfigBuilderPage() {
     fetchEntities();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [albatoToken, versionId, entityType, domainZone]);
+
+  const handleRefreshEntities = useCallback(async () => {
+    if (!albatoToken || !appId || !versionId || !entityType) return;
+    setIsLoadingEntities(true);
+    try {
+      const response = await api.get(`/albato/apps/${appId}/versions/${versionId}/entities`, {
+        params: { domainZone, albatoToken, entityType },
+      });
+      if (response.data.success && Array.isArray(response.data.entities)) {
+        setAlbatoEntities(response.data.entities);
+      }
+    } catch (error) {
+      console.error('Ошибка обновления сущностей:', error);
+    } finally {
+      setIsLoadingEntities(false);
+    }
+  }, [albatoToken, appId, versionId, entityType, domainZone]);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -676,6 +693,8 @@ function ConfigBuilderPage() {
                   value={entityId}
                   onChange={(val) => setEntityId(val)}
                   placeholder="Выберите сущность"
+                  onRefresh={handleRefreshEntities}
+                  isRefreshing={isLoadingEntities}
                   options={albatoEntities.map(entity => ({
                     value: String(entity.id),
                     label: `${entity.titleEn} (${entity.id})`,
