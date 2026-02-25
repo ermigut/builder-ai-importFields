@@ -295,8 +295,8 @@ function FieldsTable({ fields = [], onFieldsChange }) {
                   <td>
                     {field?.data?.valueType ? getTypeName(field.data.valueType) : '-'}
                   </td>
-                  <td>{field?.data?.required ? '✓' : '✗'}</td>
-                  <td>{field?.data?.isEditable ? '✓' : '✗'}</td>
+                  <td>{field?.data?.required ? <span className="mark-yes">✓</span> : <span className="mark-no">✗</span>}</td>
+                  <td>{field?.data?.isEditable ? <span className="mark-yes">✓</span> : <span className="mark-no">✗</span>}</td>
                   <td>{field?.titleRu ?? '-'}</td>
                   <td>{field?.titleEn ?? '-'}</td>
                   <td>

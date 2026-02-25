@@ -197,3 +197,15 @@
 .delete-btn:hover {
   background-color: #c82333;
 }
+
+.mark-yes {
+  color: #dc3545;
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.mark-no {
+  color: #007bff;
+  font-weight: 700;
+  font-size: 1.1rem;
+}
