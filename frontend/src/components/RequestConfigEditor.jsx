@@ -7,7 +7,7 @@ import './RequestConfigEditor.css';
  * @param {Object} props.request - Объект request
  * @param {Function} props.onRequestChange - Callback при изменении request
  */
-function RequestConfigEditor({ request = {}, onRequestChange }) {
+function RequestConfigEditor({ request = {}, onRequestChange, hideRequestData = false }) {
   // Логирование для отладки
   console.log('RequestConfigEditor received request:', request);
   console.log('Request fields count:', request.fields?.length || 0);
@@ -54,7 +54,7 @@ function RequestConfigEditor({ request = {}, onRequestChange }) {
       <h3>Конфигурация запроса (Request)</h3>
 
       {/* Request Data */}
-      <div className="config-section">
+      {!hideRequestData && <div className="config-section">
         <button
           className="section-header"
           onClick={() => toggleSection('data')}
@@ -105,7 +105,7 @@ function RequestConfigEditor({ request = {}, onRequestChange }) {
             </div>
           </div>
         )}
-      </div>
+      </div>}
 
       {/* Request Fields */}
       <div className="config-section">

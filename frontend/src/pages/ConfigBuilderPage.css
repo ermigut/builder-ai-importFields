@@ -126,6 +126,25 @@
   font-size: 0.95rem;
 }
 
+.form-field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.trigger-type-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.45rem;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background-color: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+  letter-spacing: 0.02em;
+}
+
 .entity-type-select,
 .entity-id-input {
   padding: 0.65rem;

@@ -246,8 +246,11 @@ router.get('/apps/:appId/versions/:versionId/entities', authMiddleware, async (r
     let page = 1;
     let totalPages = 1;
 
+    // Для триггеров запрашиваем expand=response, чтобы получить response.id каждого триггера
+    const expandParam = entityType === 'trigger' ? '&expand=response' : '';
+
     while (page <= totalPages && page <= MAX_PAGES) {
-      const url = `https://api.albato${domainZone}/builder/apps/${appId}/versions/${versionId}/${entityTypePlural}?page=${page}`;
+      const url = `https://api.albato${domainZone}/builder/apps/${appId}/versions/${versionId}/${entityTypePlural}?page=${page}${expandParam}`;
       console.log(`[ALBATO ENTITIES] Загрузка страницы ${page}/${totalPages}: ${url}`);
 
       const response = await axios.get(url, {
@@ -264,6 +267,10 @@ router.get('/apps/:appId/versions/:versionId/entities', authMiddleware, async (r
           .map(entity => ({
             id: entity.id,
             titleEn: entity.titleEn || `${entityType} ${entity.id}`,
+            ...(entityType === 'trigger' ? {
+              behaviourType: entity.data?.behaviourType ?? null,
+              responseId: entity.response?.id ?? null,
+            } : {}),
           }));
         allEntities = allEntities.concat(entities);
       }
@@ -299,7 +306,7 @@ router.get('/apps/:appId/versions/:versionId/entities', authMiddleware, async (r
 // POST /albato/send - защищённый маршрут для отправки данных в Albato
 router.post('/send', authMiddleware, async (req, res) => {
   try {
-    const { domainZone, albatoToken, appId, versionId, entityType, entityId, fields, request, rowSections } = req.body;
+    const { domainZone, albatoToken, appId, versionId, entityType, entityId, behaviourType, responseId, fields, request, rowSections } = req.body;
 
     // Валидация JWT токена Albato
     if (!albatoToken || typeof albatoToken !== 'string' || !albatoToken.trim()) {
@@ -378,6 +385,8 @@ router.post('/send', authMiddleware, async (req, res) => {
         versionId,
         entityType,
         entityId,
+        behaviourType,
+        responseId,
         fieldsCount: fields.length,
         rowSectionsCount: Array.isArray(rowSections) ? rowSections.length : 0,
         requestUrl: request.data?.url,
@@ -391,6 +400,8 @@ router.post('/send', authMiddleware, async (req, res) => {
         versionId,
         entityType,
         entityId,
+        behaviourType,
+        responseId,
         fields,
         request,
         rowSections: Array.isArray(rowSections) ? rowSections : [],

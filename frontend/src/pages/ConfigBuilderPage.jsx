@@ -191,6 +191,8 @@ function ConfigBuilderPage() {
   const [versionId, setVersionId] = useState(''); // ID версии (целое число)
   const [entityType, setEntityType] = useState('action'); // 'action' или 'trigger'
   const [entityId, setEntityId] = useState(''); // ID сущности (целое число)
+  const [triggerBehaviourType, setTriggerBehaviourType] = useState(null); // 1=API, 2=Webhook (только для триггеров)
+  const [triggerResponseId, setTriggerResponseId] = useState(null); // ID объекта response у Webhook-триггера
 
   const [sourceData, setSourceData] = useState({ type: '', value: '' });
   const [isGenerating, setIsGenerating] = useState(false);
@@ -291,6 +293,18 @@ function ConfigBuilderPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [albatoToken, versionId, entityType, domainZone]);
 
+  // Обновляем behaviourType и responseId при выборе триггера из списка
+  useEffect(() => {
+    if (entityType !== 'trigger' || !entityId) {
+      setTriggerBehaviourType(null);
+      setTriggerResponseId(null);
+      return;
+    }
+    const found = albatoEntities.find(e => String(e.id) === entityId);
+    setTriggerBehaviourType(found?.behaviourType ?? null);
+    setTriggerResponseId(found?.responseId ?? null);
+  }, [entityId, entityType, albatoEntities]);
+
   const handleRefreshEntities = useCallback(async () => {
     if (!albatoToken || !appId || !versionId || !entityType) return;
     setIsLoadingEntities(true);
@@ -379,11 +393,31 @@ function ConfigBuilderPage() {
       console.log('Fields:', response.data.fields);
       console.log('Request:', response.data.request);
       
+      // Для триггеров все поля по умолчанию не редактируемые (кладутся в response)
+      let newFields = response.data.fields || [];
+      let newRowSections = response.data.rowSections || [];
+      if (entityType === 'trigger') {
+        newFields = newFields.map(field => ({
+          ...field,
+          data: field.data ? { ...field.data, isEditable: false } : field.data,
+        }));
+        newRowSections = newRowSections.map(section => ({
+          ...section,
+          fields: (section.fields || []).map(f => ({
+            ...f,
+            data: f.data ? { ...f.data, isEditable: false } : f.data,
+          })),
+        }));
+      }
+
+      // Пересчитываем request.fields / response.fields на основе финального isEditable
+      const rebuiltRequest = rebuildRequestFields(newFields, newRowSections, response.data.request || {});
+
       // Сохраняем результат для отображения и редактирования
       const newData = {
-        fields: response.data.fields || [],
-        rowSections: response.data.rowSections || [],
-        request: response.data.request || {},
+        fields: newFields,
+        rowSections: newRowSections,
+        request: rebuiltRequest,
       };
       
       console.log('Setting generatedData:', newData);
@@ -464,6 +498,7 @@ function ConfigBuilderPage() {
         versionId: versionIdNumber,
         entityType: entityType, // 'action' или 'trigger'
         entityId: entityIdNumber,
+        ...(entityType === 'trigger' ? { behaviourType: triggerBehaviourType, responseId: triggerResponseId } : {}),
         fields: generatedData.fields,
         rowSections: generatedData.rowSections || [],
         request: generatedData.request,
@@ -694,7 +729,14 @@ function ConfigBuilderPage() {
               </select>
             </div>
             <div className="form-field">
-              <label htmlFor="entity-id">Сущность *</label>
+              <label htmlFor="entity-id" className="form-field-label-row">
+                Сущность *
+                {entityType === 'trigger' && entityId && triggerBehaviourType !== null && (
+                  <span className="trigger-type-tag">
+                    {triggerBehaviourType === 2 ? 'Webhook' : 'API'}
+                  </span>
+                )}
+              </label>
               {albatoEntities.length > 0 ? (
                 <SearchableSelect
                   id="entity-id"
@@ -778,6 +820,7 @@ function ConfigBuilderPage() {
                   request: updatedRequest,
                 });
               }}
+              hideRequestData={triggerBehaviourType === 2}
             />
 
             <div className="send-section">

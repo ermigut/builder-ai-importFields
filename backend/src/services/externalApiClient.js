@@ -25,7 +25,7 @@ function buildAlbatoApiUrl(domainZone, appId, versionId, entityType, entityId) {
  * @throws {Error} - Если произошла ошибка при отправке
  */
 export async function sendToAlbato(data) {
-  const { domainZone, albatoToken, appId, versionId, entityType, entityId, fields, request, rowSections } = data;
+  const { domainZone, albatoToken, appId, versionId, entityType, entityId, behaviourType, responseId, fields, request, rowSections } = data;
 
   if (!albatoToken || typeof albatoToken !== 'string' || !albatoToken.trim()) {
     throw new Error('JWT токен Albato не предоставлен');
@@ -54,12 +54,23 @@ export async function sendToAlbato(data) {
   // Строим полностью динамический URL
   const ALBATO_API_URL = buildAlbatoApiUrl(domainZone, appId, versionId, entityType, entityId);
 
-  // Преобразуем структуру: request -> requests (массив)
-  const payload = {
-    fields: fields || [],
-    requests: request ? [request] : [],
-    rowSections: rowSections || [],
-  };
+  // Для Webhook-триггера (behaviourType === 2) отправляем только response,
+  // для всех остальных (Action или API-триггер) — массив requests
+  const isWebhookTrigger = entityType === 'trigger' && behaviourType === 2;
+  const payload = isWebhookTrigger
+    ? {
+        fields: fields || [],
+        response: {
+          ...(request?.response || {}),
+          ...(responseId != null ? { id: responseId } : {}),
+        },
+        rowSections: rowSections || [],
+      }
+    : {
+        fields: fields || [],
+        requests: request ? [request] : [],
+        rowSections: rowSections || [],
+      };
 
   const requestStartTime = Date.now();
 
@@ -70,12 +81,17 @@ export async function sendToAlbato(data) {
     console.log('Version ID:', versionId);
     console.log('Entity Type:', entityType);
     console.log('Entity ID:', entityId);
+    console.log('Behaviour Type:', behaviourType, isWebhookTrigger ? '(Webhook Trigger)' : '');
     console.log('Построенный URL:', ALBATO_API_URL);
     console.log('Время запроса:', new Date().toISOString());
     console.log('Исходные данные (от клиента):', JSON.stringify({ fields, request }, null, 2));
     console.log('Преобразованные данные (для отправки):', JSON.stringify(payload, null, 2));
     console.log('Количество полей:', payload.fields?.length || 0);
-    console.log('Количество запросов в массиве requests:', payload.requests?.length || 0);
+    if (isWebhookTrigger) {
+      console.log('Режим Webhook Trigger: отправляется объект response (не массив requests)');
+    } else {
+      console.log('Количество запросов в массиве requests:', payload.requests?.length || 0);
+    }
     console.log('Количество строковых секций:', payload.rowSections?.length || 0);
     console.log('JWT токен:', albatoToken ? `${albatoToken.substring(0, 20)}...` : 'НЕ ПРЕДОСТАВЛЕН');
 
