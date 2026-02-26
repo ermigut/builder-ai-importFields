@@ -292,8 +292,14 @@ export function getInstructionPrompt() {
 15. НИКОГДА не используй плейсхолдеры типа "<URL внешнего API>" или "<URL документации или пустая строка>" - используй реальные значения или пустые строки
 16. Всегда возвращай валидный JSON без дополнительного текста
 17. **Кастомные поля:** Полностью ИГНОРИРУЙ любые свойства JSON, связанные с кастомными полями (customFields, custom_fields, cfs, cfsMappings, cfs_mappings и их вариации). НЕ создавай для них поля в массиве "fields" и НЕ добавляй их в request.fields. Если встретишь такой ключ — пропусти его целиком вместе со всем содержимым.
-18. **Массивы объектов → Строковые секции (rowSections):** Если в JSON встречается свойство, значение которого является МАССИВОМ ОБЪЕКТОВ (например "items": [{"id": 1, "name": "foo"}, ...]), создай для него запись в массиве "rowSections" вместо обычного поля в "fields". НЕ создавай такой ключ в "fields". Поля строковой секции формируй на основе свойств ПЕРВОГО элемента массива. Массивы примитивов (строк, чисел) — это обычные поля типа StringArray (101) или IntArray (102), их в rowSections НЕ помещай.
-19. **Коды строковых секций и их полей:** Код самой секции должен отражать ПОЛНЫЙ путь к массиву, используя "__" вместо точек (так же как и обычные поля). Например, если JSON содержит {"data": {"contacts": [...]}}, то код секции должен быть "data__contacts". Для полей внутри rowSections используй префикс в виде кода секции: "{код_секции}__{имя_свойства}". Например, "data__contacts__name".
+18. **Массивы объектов → Строковые секции (rowSections):** Если в JSON встречается свойство, значение которого является МАССИВОМ ОБЪЕКТОВ (например "items": [{"id": 1, "name": "foo"}, ...]), создай для него запись в массиве "rowSections" вместо обычного поля в "fields". НЕ создавай такой ключ в "fields". Поля строковой секции формируй на основе свойств ПЕРВОГО элемента массива. Массивы примитивов (строк, чисел) — это обычные поля типа StringArray (101) или IntArray (102), их в rowSections НЕ помещай. КРИТИЧЕСКИ ВАЖНО: НЕ добавляй в массив "fields" поля, которые являются свойствами элементов массива объектов — они должны быть ТОЛЬКО в rowSections[].fields. Плоские свойства JSON (строки, числа, булевы и т.д.) ВСЕГДА помещай в "fields" как обычно — даже если рядом есть массивы объектов. Массив "fields" бывает пустым [] ТОЛЬКО если в JSON вообще нет плоских свойств (есть лишь массивы объектов).
+   Пример 1 — только массив, нет плоских полей, JSON {"lead_lists": [{"id": "abc", "name": "List 1"}]}:
+   ПРАВИЛЬНО: "fields": [], "rowSections": [{"data": {"code": "lead_lists"}, "fields": [{"data": {"code": "lead_lists__id"}}, {"data": {"code": "lead_lists__name"}}]}]
+   НЕПРАВИЛЬНО: "fields": [{"data": {"code": "lead_lists__id"}}, {"data": {"code": "lead_lists__name"}}], "rowSections": []
+   Пример 2 — смешанный, JSON {"orgId": 123, "rev": "abc", "lead_lists": [{"id": "x", "name": "y"}]}:
+   ПРАВИЛЬНО: "fields": [{"data": {"code": "orgId"}}, {"data": {"code": "rev"}}], "rowSections": [{"data": {"code": "lead_lists"}, "fields": [{"data": {"code": "lead_lists__id"}}, {"data": {"code": "lead_lists__name"}}]}]
+   НЕПРАВИЛЬНО: "fields": [], "rowSections": [...]  — нельзя опускать плоские поля orgId и rev!
+19. **Коды строковых секций и их полей:** Код самой секции должен отражать ПОЛНЫЙ путь к массиву, используя "__" вместо точек (так же как и обычные поля). Например, если JSON содержит {"data": {"contacts": [...]}}, то код секции должен быть "data__contacts". Для полей внутри rowSections используй префикс в виде кода секции: "{код_секции}__{имя_свойства}". Например, "data__contacts__name". КРИТИЧЕСКИ ВАЖНО: НИКОГДА не используй числовые индексы в кодах полей строковых секций. Правильно: "lead_lists__id", "lead_lists__name". НЕПРАВИЛЬНО: "lead_lists__0__id", "lead_lists__0__name". Индексы массива в кодах полей недопустимы.
 20. **Глобальная уникальность кодов:** Все коды во всех массивах (fields[].data.code, rowSections[].data.code, rowSections[].fields[].data.code) должны быть ГЛОБАЛЬНО УНИКАЛЬНЫМИ — никакие два кода не должны совпадать между собой.`;
 }
 
@@ -513,12 +519,76 @@ export async function generateTargetJson(sourceType, sourceValue) {
     });
   }
 
+  // Инициализируем rowSections если AI не вернул это поле
+  if (!Array.isArray(result.rowSections)) result.rowSections = [];
+
+  // Авто-продвижение: если AI поместил поля элементов массива в result.fields вместо rowSections,
+  // автоматически определяем такие поля по исходному JSON и перемещаем их в rowSection.
+  if (sourceJsonForFields && result.fields && Array.isArray(result.fields)) {
+    const findArrayObjectPaths = (obj, prefix = '') => {
+      const paths = [];
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return paths;
+      for (const [key, value] of Object.entries(obj)) {
+        if (isCustomFieldKey(key)) continue;
+        const path = prefix ? `${prefix}__${key}` : key;
+        if (Array.isArray(value) && value.length > 0 && value[0] !== null && typeof value[0] === 'object') {
+          paths.push(path);
+        } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+          paths.push(...findArrayObjectPaths(value, path));
+        }
+      }
+      return paths;
+    };
+
+    for (const arrayPath of findArrayObjectPaths(sourceJsonForFields)) {
+      // Пропускаем, если rowSection для этого пути уже существует
+      if (result.rowSections.some(s => (s.data?.code || '').replace(/\./g, '__') === arrayPath)) continue;
+
+      // Ищем в result.fields поля, относящиеся к элементам этого массива
+      const promoted = result.fields.filter(f => {
+        const code = (f.data?.code || '').replace(/\./g, '__');
+        return code.startsWith(arrayPath + '__');
+      });
+      if (promoted.length === 0) continue;
+
+      // Создаём rowSection из найденных полей и добавляем в список
+      const titleWords = arrayPath.replace(/__/g, ' ');
+      result.rowSections.push({
+        id: null,
+        versionId: null,
+        data: { code: arrayPath, customFieldsIsEditable: false, customFieldsIsRequired: false },
+        titleEn: titleWords.replace(/\b\w/g, l => l.toUpperCase()),
+        titleRu: titleWords,
+        fields: promoted,
+        customFieldsSetLinks: [],
+      });
+
+      // Удаляем продвинутые поля (и поле-заглушку самого ключа-массива) из result.fields
+      result.fields = result.fields.filter(f => {
+        const code = (f.data?.code || '').replace(/\./g, '__');
+        return !code.startsWith(arrayPath + '__') && code !== arrayPath;
+      });
+    }
+  }
+
   // Постобработка rowSections: фильтрация, санитизация кодов, уникальность
   if (result.rowSections && Array.isArray(result.rowSections)) {
-    // Собираем уже занятые коды из обычных fields
+    // Предварительно собираем сырые коды секций (до полной обработки),
+    // чтобы исключить перекрывающиеся коды из usedCodes и избежать ложных суффиксов "_2"
+    const rawSectionKeys = result.rowSections
+      .filter(s => s && s.data?.code)
+      .map(s => String(s.data.code).replace(/\./g, '__'));
+
+    // Собираем уже занятые коды из обычных fields,
+    // НЕ включая коды, которые перекрываются с rowSections (они будут удалены позже)
     const usedCodes = new Set();
     if (result.fields && Array.isArray(result.fields)) {
-      result.fields.forEach(f => { if (f.data?.code) usedCodes.add(f.data.code); });
+      result.fields.forEach(f => {
+        const code = (f.data?.code || '').replace(/\./g, '__');
+        if (!code) return;
+        const overlaps = rawSectionKeys.some(sk => code === sk || code.startsWith(sk + '__'));
+        if (!overlaps) usedCodes.add(code);
+      });
     }
 
     result.rowSections = result.rowSections
@@ -567,9 +637,12 @@ export async function generateTargetJson(sourceType, sourceValue) {
             if (field.data?.code) {
               const aiCode = String(field.data.code).replace(/\./g, '__');
               // Извлекаем имя свойства: убираем старый короткий префикс AI
-              const propPart = (oldPrefix && aiCode.startsWith(oldPrefix))
+              const rawPropPart = (oldPrefix && aiCode.startsWith(oldPrefix))
                 ? aiCode.slice(oldPrefix.length)
                 : aiCode;
+              // Убираем числовой индекс массива, если AI сгенерировал его ошибочно
+              // Например: "0__id" → "id", "1__name" → "name"
+              const propPart = rawPropPart.replace(/^\d+__/, '');
               // Строим новый код: data__contacts__name
               let code = newSectionCode ? `${newSectionCode}__${propPart}` : propPart;
               const base = code;
@@ -614,6 +687,23 @@ export async function generateTargetJson(sourceType, sourceValue) {
       });
   } else {
     result.rowSections = [];
+  }
+
+  // Удаляем из result.fields поля, которые дублируют rowSections:
+  // AI иногда генерирует и rowSection, и обычные поля с индексным маппингом
+  // (например lead_lists__0__id) для одного и того же массива объектов.
+  if (result.rowSections.length > 0 && result.fields && Array.isArray(result.fields)) {
+    const sectionCodes = new Set(result.rowSections.map(s => s.data?.code).filter(Boolean));
+    result.fields = result.fields.filter(field => {
+      const code = (field.data?.code || '').replace(/\./g, '__');
+      if (!code) return true;
+      for (const sectionCode of sectionCodes) {
+        if (code === sectionCode || code.startsWith(sectionCode + '__')) {
+          return false;
+        }
+      }
+      return true;
+    });
   }
 
   // Постобработка: заменяем точки на "__" в кодах полей и исправляем типы
@@ -798,11 +888,25 @@ export async function generateTargetJson(sourceType, sourceValue) {
 
     // Для row section (valueType=99) применяем formatCfg к дочерним полям
     if (requestField.data.valueType === 99) {
+      // Для правильного detectFormatCfg нужно искать значения внутри массива,
+      // а не на верхнем уровне sourceJson
+      let arrayItemContext = null;
+      if (sourceJson && requestField.data.key) {
+        const arrayKeys = requestField.data.key.split('.');
+        let arr = sourceJson;
+        for (const k of arrayKeys) {
+          if (arr && typeof arr === 'object' && k in arr) arr = arr[k];
+          else { arr = null; break; }
+        }
+        if (Array.isArray(arr) && arr.length > 0 && typeof arr[0] === 'object') {
+          arrayItemContext = arr[0];
+        }
+      }
       requestField.children = (requestField.children || []).map(child => {
         if (!child.data) return child;
         let childValueType = child.data.valueType;
         const childKey = child.data.key;
-        const formatCfg = detectFormatCfg(childValueType, childKey, sourceJson);
+        const formatCfg = detectFormatCfg(childValueType, childKey, arrayItemContext || sourceJson);
         if (formatCfg) child.data.formatCfg = formatCfg;
         return child;
       });
