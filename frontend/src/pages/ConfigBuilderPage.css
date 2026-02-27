@@ -333,6 +333,26 @@
   }
 }
 
+.source-section {
+  transition: opacity 0.2s;
+}
+
+.source-section--disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.source-section-hint {
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 1rem;
+  background-color: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffeeba;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
 .action-buttons {
   display: flex;
   gap: 1rem;
@@ -387,6 +407,7 @@
 .generated-content h2 {
   margin: 0 0 1rem 0;
   color: #333;
+  text-align: center;
 }
 
 .generated-content pre {

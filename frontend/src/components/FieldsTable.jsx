@@ -1,29 +1,9 @@
 import { useState } from 'react';
 import './FieldsTable.css';
 
-/**
- * @typedef {Object} Field
- * @property {number|null} id
- * @property {number|null} versionId
- * @property {Object} data
- * @property {string} data.code
- * @property {number} data.valueType
- * @property {boolean} data.required
- * @property {boolean} data.isEditable
- * @property {string} data.dateCreated
- * @property {number|null} enumId
- * @property {string|null} titleEn
- * @property {string|null} titleRu
- * @property {string|null} hintEn
- * @property {string|null} hintRu
- */
+/** 'en' → 'titleEn', 'ru' → 'titleRu', 'pt' → 'titlePt', etc. */
+const langToTitleKey = (lang) => 'title' + lang.charAt(0).toUpperCase() + lang.slice(1);
 
-/**
- * Компонент для отображения и редактирования массива fields
- * @param {Object} props
- * @param {Field[]} props.fields - Массив полей
- * @param {Function} props.onFieldsChange - Callback при изменении полей
- */
 const NEW_FIELD_TEMPLATE = {
   id: null,
   versionId: null,
@@ -35,39 +15,22 @@ const NEW_FIELD_TEMPLATE = {
     dateCreated: '',
   },
   enumId: null,
-  titleEn: null,
-  titleRu: null,
   hintEn: null,
   hintRu: null,
 };
 
-function FieldsTable({ fields = [], onFieldsChange }) {
+function FieldsTable({ fields = [], onFieldsChange, languages = ['en', 'ru'] }) {
   const [editingIndex, setEditingIndex] = useState(null);
   const [editedField, setEditedField] = useState(null);
   const [isAdding, setIsAdding] = useState(false);
   const [newField, setNewField] = useState(null);
-  
-  // Логирование для отладки
-  console.log('FieldsTable received fields:', fields);
-  console.log('Fields type:', Array.isArray(fields) ? 'array' : typeof fields);
-  console.log('Fields count:', Array.isArray(fields) ? fields.length : 0);
-  console.log('Fields is array?', Array.isArray(fields));
 
-  // Защита: убеждаемся, что fields - это массив
   const safeFields = Array.isArray(fields) ? fields : [];
 
-  // Функция для получения названия типа по ID
   const getTypeName = (valueType) => {
     const typeMap = {
-      1: 'String',
-      2: 'Int',
-      3: 'Decimal',
-      5: 'DateTime',
-      7: 'File',
-      8: 'Date',
-      9: 'Boolean',
-      101: 'StringArray',
-      102: 'IntArray',
+      1: 'String', 2: 'Int', 3: 'Decimal', 5: 'DateTime',
+      7: 'File', 8: 'Date', 9: 'Boolean', 101: 'StringArray', 102: 'IntArray',
     };
     return typeMap[valueType] || `Неизвестный (${valueType})`;
   };
@@ -78,12 +41,10 @@ function FieldsTable({ fields = [], onFieldsChange }) {
   };
 
   const handleSave = (index) => {
-    // Валидация обязательных полей
     if (!editedField.data?.code || editedField.data.code.trim() === '') {
       alert('Поле "Код" является обязательным');
       return;
     }
-
     const updatedFields = [...safeFields];
     updatedFields[index] = editedField;
     onFieldsChange(updatedFields);
@@ -149,18 +110,9 @@ function FieldsTable({ fields = [], onFieldsChange }) {
   const handleFieldChange = (field, key, value) => {
     if (key.startsWith('data.')) {
       const dataKey = key.replace('data.', '');
-      setEditedField({
-        ...field,
-        data: {
-          ...field.data,
-          [dataKey]: value,
-        },
-      });
+      setEditedField({ ...field, data: { ...field.data, [dataKey]: value } });
     } else {
-      setEditedField({
-        ...field,
-        [key]: value,
-      });
+      setEditedField({ ...field, [key]: value });
     }
   };
 
@@ -182,6 +134,7 @@ function FieldsTable({ fields = [], onFieldsChange }) {
         <h3>Поля (Fields)</h3>
         <button onClick={handleAddNew} className="add-field-btn" disabled={isAdding}>+ Добавить поле</button>
       </div>
+      <div className="fields-table-scroll">
       <table className="fields-table">
         <thead>
           <tr>
@@ -189,37 +142,24 @@ function FieldsTable({ fields = [], onFieldsChange }) {
             <th>Тип</th>
             <th>
               Обязательное
-              <button
-                className="toggle-all-btn"
-                onClick={() => handleToggleAll('required')}
-                title="Сменить у всех полей"
-              >
+              <button className="toggle-all-btn" onClick={() => handleToggleAll('required')} title="Сменить у всех полей">
                 Сменить у всех
               </button>
             </th>
             <th>
               Редактируемое
-              <button
-                className="toggle-all-btn"
-                onClick={() => handleToggleAll('isEditable')}
-                title="Сменить у всех полей"
-              >
+              <button className="toggle-all-btn" onClick={() => handleToggleAll('isEditable')} title="Сменить у всех полей">
                 Сменить у всех
               </button>
             </th>
-            <th>Название (RU)</th>
-            <th>Название (EN)</th>
+            {languages.map(lang => (
+              <th key={lang} className="lang-col" title={`Название (${lang.toUpperCase()})`}>{lang.toUpperCase()}</th>
+            ))}
             <th>Действия</th>
           </tr>
         </thead>
         <tbody>
-          {safeFields.map((field, index) => {
-            console.log(`Rendering field ${index}:`, field);
-            console.log(`Field data:`, field.data);
-            console.log(`Field titleRu:`, field.titleRu);
-            console.log(`Field titleEn:`, field.titleEn);
-            
-            return (
+          {safeFields.map((field, index) => (
             <tr key={index} className={editingIndex === index ? 'editing' : ''}>
               {editingIndex === index ? (
                 <>
@@ -266,22 +206,19 @@ function FieldsTable({ fields = [], onFieldsChange }) {
                       className="field-checkbox"
                     />
                   </td>
-                  <td>
-                    <input
-                      type="text"
-                      value={editedField.titleRu || ''}
-                      onChange={(e) => handleFieldChange(editedField, 'titleRu', e.target.value || null)}
-                      className="field-input"
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="text"
-                      value={editedField.titleEn || ''}
-                      onChange={(e) => handleFieldChange(editedField, 'titleEn', e.target.value || null)}
-                      className="field-input"
-                    />
-                  </td>
+                  {languages.map(lang => {
+                    const key = langToTitleKey(lang);
+                    return (
+                      <td key={lang} className="lang-col">
+                        <input
+                          type="text"
+                          value={editedField[key] || ''}
+                          onChange={(e) => handleFieldChange(editedField, key, e.target.value || null)}
+                          className="field-input"
+                        />
+                      </td>
+                    );
+                  })}
                   <td>
                     <div className="action-buttons-cell">
                       <button onClick={() => handleSave(index)} className="save-btn">Сохранить</button>
@@ -292,13 +229,13 @@ function FieldsTable({ fields = [], onFieldsChange }) {
               ) : (
                 <>
                   <td>{field?.data?.code ?? '-'}</td>
-                  <td>
-                    {field?.data?.valueType ? getTypeName(field.data.valueType) : '-'}
-                  </td>
+                  <td>{field?.data?.valueType ? getTypeName(field.data.valueType) : '-'}</td>
                   <td>{field?.data?.required ? <span className="mark-yes">✓</span> : <span className="mark-no">✗</span>}</td>
                   <td>{field?.data?.isEditable ? <span className="mark-yes">✓</span> : <span className="mark-no">✗</span>}</td>
-                  <td>{field?.titleRu ?? '-'}</td>
-                  <td>{field?.titleEn ?? '-'}</td>
+                  {languages.map(lang => {
+                    const key = langToTitleKey(lang);
+                    return <td key={lang} className="lang-col">{field?.[key] ?? '-'}</td>;
+                  })}
                   <td>
                     <div className="action-buttons-cell">
                       <button onClick={() => handleEdit(index)} className="edit-btn">Редактировать</button>
@@ -308,8 +245,7 @@ function FieldsTable({ fields = [], onFieldsChange }) {
                 </>
               )}
             </tr>
-            );
-          })}
+          ))}
           {isAdding && newField && (
             <tr className="editing">
               <td>
@@ -355,22 +291,19 @@ function FieldsTable({ fields = [], onFieldsChange }) {
                   className="field-checkbox"
                 />
               </td>
-              <td>
-                <input
-                  type="text"
-                  value={newField.titleRu || ''}
-                  onChange={(e) => handleNewFieldChange('titleRu', e.target.value || null)}
-                  className="field-input"
-                />
-              </td>
-              <td>
-                <input
-                  type="text"
-                  value={newField.titleEn || ''}
-                  onChange={(e) => handleNewFieldChange('titleEn', e.target.value || null)}
-                  className="field-input"
-                />
-              </td>
+              {languages.map(lang => {
+                const key = langToTitleKey(lang);
+                return (
+                  <td key={lang} className="lang-col">
+                    <input
+                      type="text"
+                      value={newField[key] || ''}
+                      onChange={(e) => handleNewFieldChange(key, e.target.value || null)}
+                      className="field-input"
+                    />
+                  </td>
+                );
+              })}
               <td>
                 <div className="action-buttons-cell">
                   <button onClick={handleSaveNew} className="save-btn">Сохранить</button>
@@ -381,6 +314,7 @@ function FieldsTable({ fields = [], onFieldsChange }) {
           )}
         </tbody>
       </table>
+      </div>
       <div className="fields-table-footer">
         <button onClick={handleAddNew} className="add-field-btn" disabled={isAdding}>+ Добавить поле</button>
       </div>

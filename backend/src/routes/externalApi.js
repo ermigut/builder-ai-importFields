@@ -208,6 +208,9 @@ router.get('/apps/:appId/versions', authMiddleware, async (req, res) => {
       success: true,
       versionId: lastVersion.id,
       status: lastVersion.status,
+      languages: Array.isArray(lastVersion.languages) && lastVersion.languages.length > 0
+        ? lastVersion.languages
+        : ['en', 'ru'],
     });
   } catch (error) {
     console.error('[ALBATO VERSIONS] Ошибка:', error.message);

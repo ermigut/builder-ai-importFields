@@ -8,7 +8,7 @@ const router = express.Router();
 // POST /ai/generate - защищённый маршрут, требует аутентификации
 router.post('/generate', authMiddleware, async (req, res) => {
   try {
-    const { sourceType, sourceValue } = req.body;
+    const { sourceType, sourceValue, languages } = req.body;
 
     // Валидация входных данных
     if (!sourceType || !sourceValue) {
@@ -31,7 +31,8 @@ router.post('/generate', authMiddleware, async (req, res) => {
 
     // Генерация целевого JSON через ИИ
     try {
-      const result = await generateTargetJson(sourceType, sourceValue.trim());
+      const langs = Array.isArray(languages) && languages.length > 0 ? languages : ['en', 'ru'];
+      const result = await generateTargetJson(sourceType, sourceValue.trim(), langs);
       
       // Логируем результат для отладки
       console.log('AI generated result:', JSON.stringify(result, null, 2));

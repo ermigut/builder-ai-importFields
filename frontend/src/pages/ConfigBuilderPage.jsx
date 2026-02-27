@@ -189,6 +189,7 @@ function ConfigBuilderPage() {
   // Настройки Albato
   const [appId, setAppId] = useState(''); // ID приложения (целое число)
   const [versionId, setVersionId] = useState(''); // ID версии (целое число)
+  const [versionLanguages, setVersionLanguages] = useState(['en', 'ru']); // Языки версии приложения
   const [entityType, setEntityType] = useState('action'); // 'action' или 'trigger'
   const [entityId, setEntityId] = useState(''); // ID сущности (целое число)
   const [triggerBehaviourType, setTriggerBehaviourType] = useState(null); // 1=API, 2=Webhook (только для триггеров)
@@ -253,6 +254,9 @@ function ConfigBuilderPage() {
         });
         if (response.data.success) {
           setVersionId(String(response.data.versionId));
+          if (Array.isArray(response.data.languages) && response.data.languages.length > 0) {
+            setVersionLanguages(response.data.languages);
+          }
         } else {
           setVersionError(response.data.error || 'Ошибка получения версии');
         }
@@ -384,6 +388,7 @@ function ConfigBuilderPage() {
       const requestData = {
         sourceType: sourceData.type,
         sourceValue: sourceData.value.trim(),
+        languages: versionLanguages,
       };
 
       const response = await api.post('/ai/generate', requestData);
@@ -767,23 +772,30 @@ function ConfigBuilderPage() {
           </div>
         </div>
 
-        <SourceInputSwitcher onSourceChange={handleSourceChange} />
-        <div className="action-buttons">
-          <button
-            onClick={handleGenerate}
-            disabled={isGenerating || !sourceData.value}
-            className="generate-button"
-          >
-            {isGenerating ? 'Генерация...' : 'Сгенерировать'}
-          </button>
-          {generatedData && (
-            <button
-              onClick={() => setGeneratedData(null)}
-              className="reset-button"
-            >
-              Сбросить
-            </button>
+        <div className={`source-section${!entityId ? ' source-section--disabled' : ''}`}>
+          {!entityId && (
+            <div className="source-section-hint">
+              Выберите сущность выше, чтобы продолжить
+            </div>
           )}
+          <SourceInputSwitcher onSourceChange={handleSourceChange} />
+          <div className="action-buttons">
+            <button
+              onClick={handleGenerate}
+              disabled={isGenerating || !sourceData.value || !entityId}
+              className="generate-button"
+            >
+              {isGenerating ? 'Генерация...' : 'Сгенерировать'}
+            </button>
+            {generatedData && (
+              <button
+                onClick={() => setGeneratedData(null)}
+                className="reset-button"
+              >
+                Сбросить
+              </button>
+            )}
+          </div>
         </div>
         
         {generatedData && (
@@ -792,6 +804,7 @@ function ConfigBuilderPage() {
             
             <FieldsTable
               fields={generatedData.fields || []}
+              languages={versionLanguages}
               onFieldsChange={(updatedFields) => {
                 setGeneratedData({
                   ...generatedData,
@@ -803,6 +816,7 @@ function ConfigBuilderPage() {
 
             <RowSectionsTable
               rowSections={generatedData.rowSections || []}
+              languages={versionLanguages}
               onRowSectionsChange={(updatedSections) => {
                 setGeneratedData({
                   ...generatedData,

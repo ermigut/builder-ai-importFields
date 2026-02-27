@@ -2,23 +2,18 @@ import { useState } from 'react';
 import FieldsTable from './FieldsTable';
 import './RowSectionsTable.css';
 
-const getTypeName = (valueType) => {
-  const typeMap = {
-    1: 'String', 2: 'Int', 3: 'Decimal', 5: 'DateTime',
-    7: 'File', 8: 'Date', 9: 'Boolean', 101: 'StringArray', 102: 'IntArray',
-  };
-  return typeMap[valueType] || `Тип (${valueType})`;
-};
+/** 'en' → 'titleEn', 'ru' → 'titleRu', 'pt' → 'titlePt', etc. */
+const langToTitleKey = (lang) => 'title' + lang.charAt(0).toUpperCase() + lang.slice(1);
 
 /**
  * Компонент для отображения и редактирования строковых секций (rowSections)
  * @param {Object} props
  * @param {Array} props.rowSections
  * @param {Function} props.onRowSectionsChange
+ * @param {string[]} props.languages - Список кодов языков
  */
-function RowSectionsTable({ rowSections = [], onRowSectionsChange }) {
+function RowSectionsTable({ rowSections = [], onRowSectionsChange, languages = ['en', 'ru'] }) {
   const [expandedIndexes, setExpandedIndexes] = useState(() => {
-    // Разворачиваем все секции по умолчанию
     return new Set(rowSections.map((_, i) => i));
   });
   const [editingIndex, setEditingIndex] = useState(null);
@@ -83,8 +78,6 @@ function RowSectionsTable({ rowSections = [], onRowSectionsChange }) {
           const isExpanded = expandedIndexes.has(index);
           const isEditing = editingIndex === index;
           const code = section?.data?.code || '—';
-          const titleRu = section?.titleRu || '';
-          const titleEn = section?.titleEn || '';
           const fieldsCount = Array.isArray(section?.fields) ? section.fields.length : 0;
 
           return (
@@ -111,28 +104,22 @@ function RowSectionsTable({ rowSections = [], onRowSectionsChange }) {
                         className="section-input"
                       />
                     </label>
-                    <label>Название (RU):
-                      <input
-                        type="text"
-                        value={editedSection.titleRu || ''}
-                        onChange={(e) => setEditedSection(prev => ({
-                          ...prev,
-                          titleRu: e.target.value || null,
-                        }))}
-                        className="section-input"
-                      />
-                    </label>
-                    <label>Название (EN):
-                      <input
-                        type="text"
-                        value={editedSection.titleEn || ''}
-                        onChange={(e) => setEditedSection(prev => ({
-                          ...prev,
-                          titleEn: e.target.value || null,
-                        }))}
-                        className="section-input"
-                      />
-                    </label>
+                    {languages.map(lang => {
+                      const key = langToTitleKey(lang);
+                      return (
+                        <label key={lang}>Название ({lang.toUpperCase()}):
+                          <input
+                            type="text"
+                            value={editedSection[key] || ''}
+                            onChange={(e) => setEditedSection(prev => ({
+                              ...prev,
+                              [key]: e.target.value || null,
+                            }))}
+                            className="section-input"
+                          />
+                        </label>
+                      );
+                    })}
                     <div className="section-header-actions">
                       <button onClick={() => handleSave(index)} className="save-btn">Сохранить</button>
                       <button onClick={handleCancel} className="cancel-btn">Отмена</button>
@@ -141,8 +128,13 @@ function RowSectionsTable({ rowSections = [], onRowSectionsChange }) {
                 ) : (
                   <div className="row-section-info">
                     <span className="section-code">{code}</span>
-                    {titleRu && <span className="section-title section-title-ru">{titleRu}</span>}
-                    {titleEn && <span className="section-title section-title-en">{titleEn}</span>}
+                    {languages.map(lang => {
+                      const key = langToTitleKey(lang);
+                      const title = section?.[key];
+                      return title
+                        ? <span key={lang} className={`section-title section-title-${lang}`}>{title}</span>
+                        : null;
+                    })}
                     <span className="section-fields-count">({fieldsCount} полей)</span>
                   </div>
                 )}
@@ -160,6 +152,7 @@ function RowSectionsTable({ rowSections = [], onRowSectionsChange }) {
                   {fieldsCount > 0 ? (
                     <FieldsTable
                       fields={section.fields}
+                      languages={languages}
                       onFieldsChange={(newFields) => handleSectionFieldsChange(index, newFields)}
                     />
                   ) : (

@@ -93,11 +93,53 @@ export async function generateJsonFromPrompt(prompt, model = 'gpt-4o-mini') {
   }
 }
 
+/** Карта кодов языков к их полным названиям для промпта AI */
+const LANG_NAMES = {
+  en: 'English', ru: 'Russian', pt: 'Portuguese', es: 'Spanish',
+  tr: 'Turkish', fr: 'French', de: 'German',
+};
+
+/** Преобразует код языка в название поля: 'en' → 'titleEn', 'ru' → 'titleRu', 'pt' → 'titlePt' */
+function langToTitleKey(lang) {
+  return 'title' + lang.charAt(0).toUpperCase() + lang.slice(1);
+}
+
 /**
  * Генерирует шаблонную инструкцию для ИИ, описывающую целевой формат JSON
+ * @param {string[]} languages - Список кодов языков (например ['en','ru','pt'])
  * @returns {string} - Инструкция в виде текста
  */
-export function getInstructionPrompt() {
+export function getInstructionPrompt(languages = ['en', 'ru']) {
+  // Строки для шаблона поля: "titleEn": "...", "titleRu": "...", ...
+  const fieldTitleLines = languages
+    .map(lang => `      "${langToTitleKey(lang)}": "<название на ${LANG_NAMES[lang] || lang}>"`)
+    .join(',\n');
+
+  // Строки для шаблона секции rowSections[]
+  const sectionTitleLines = languages
+    .map(lang => `      "${langToTitleKey(lang)}": "<название секции на ${LANG_NAMES[lang] || lang}>"`)
+    .join(',\n');
+
+  // Строки для шаблона поля внутри rowSections[].fields[]
+  const sectionFieldTitleLines = languages
+    .map(lang => `          "${langToTitleKey(lang)}": "<название поля на ${LANG_NAMES[lang] || lang}>"`)
+    .join(',\n');
+
+  // Описание языков для правила 8
+  const langListStr = languages.map(lang => `${lang.toUpperCase()} (${LANG_NAMES[lang] || lang})`).join(', ');
+  const exampleTitleStr = languages.map(lang => {
+    const ex = { en: 'Name', ru: 'Имя', pt: 'Nome', es: 'Nombre', tr: 'İsim', fr: 'Nom', de: 'Name' };
+    return `${langToTitleKey(lang)}="${ex[lang] || 'Name'}"`;
+  }).join(', ');
+  const exampleAmountStr = languages.map(lang => {
+    const ex = { en: 'Amount', ru: 'Сумма', pt: 'Valor', es: 'Monto', tr: 'Tutar', fr: 'Montant', de: 'Betrag' };
+    return `${langToTitleKey(lang)}="${ex[lang] || 'Amount'}"`;
+  }).join(', ');
+  const exampleStatusStr = languages.map(lang => {
+    const ex = { en: 'Status', ru: 'Статус', pt: 'Status', es: 'Estado', tr: 'Durum', fr: 'Statut', de: 'Status' };
+    return `${langToTitleKey(lang)}="${ex[lang] || 'Status'}"`;
+  }).join(', ');
+
   return `Проанализируй предоставленные данные API и сгенерируй JSON-объект со следующей структурой:
 
 {
@@ -113,8 +155,7 @@ export function getInstructionPrompt() {
         "dateCreated": "<дата в формате 'YYYY-MM-DD HH:mm:ss' или текущая дата>"
       },
       "enumId": <число или null>,
-      "titleEn": "<название на английском>",
-      "titleRu": "<название на русском>",
+${fieldTitleLines},
       "hintEn": "<подсказка на английском или null>",
       "hintRu": "<подсказка на русском или null>"
     }
@@ -128,8 +169,7 @@ export function getInstructionPrompt() {
         "customFieldsIsEditable": false,
         "customFieldsIsRequired": false
       },
-      "titleEn": "<название секции на английском>",
-      "titleRu": "<название секции на русском>",
+${sectionTitleLines},
       "fields": [
         {
           "id": null,
@@ -142,8 +182,7 @@ export function getInstructionPrompt() {
             "dateCreated": "<дата в формате 'YYYY-MM-DD HH:mm:ss'>"
           },
           "enumId": null,
-          "titleEn": "<название поля на английском>",
-          "titleRu": "<название поля на русском>",
+${sectionFieldTitleLines},
           "hintEn": null
         }
       ],
@@ -282,7 +321,7 @@ export function getInstructionPrompt() {
    - Unix timestamp в миллисекундах (13 цифр, значение от 1000000000000 до 9999999999999, например 1770732087654) -> 5 (DateTime)
    Если число выглядит как unix timestamp (10 или 13 цифр в указанных диапазонах), это дата и время.
    Примеры: строка "test" -> 1, число 42 -> 2, число 3.14 -> 3, unix timestamp в секундах 1770729544 -> 5 (DateTime), unix timestamp в миллисекундах 1770732087654 -> 5 (DateTime), true/false -> 9, массив ["a", "b"] -> 101, массив [1, 2, 3] -> 102.
-8. **Названия полей:** Используй осмысленные названия на русском и английском. Например, для "name" -> titleRu="Имя", titleEn="Name"; для "age" -> titleRu="Возраст", titleEn="Age".
+8. **Названия полей:** Используй осмысленные названия на всех указанных языках: ${langListStr}. ОБЯЗАТЕЛЬНО заполняй названия на КАЖДОМ из перечисленных языков — не пропускай ни один язык. Примеры переводов: для "name" -> ${exampleTitleStr}; для "amount" -> ${exampleAmountStr}; для "status" -> ${exampleStatusStr}.
 9. В "request.data.url" ОБЯЗАТЕЛЬНО укажи РЕАЛЬНЫЙ URL из исходных данных (если в исходных данных есть URL, используй его, иначе используй пустую строку, НЕ используй плейсхолдеры типа "<URL внешнего API>")
 10. В "request.data.apiDocUrl" укажи URL документации, если он есть в исходных данных, иначе пустую строку (НЕ используй плейсхолдеры)
 11. В "request.data.method" укажи код HTTP-метода (0=GET, 1=POST, 2=PUT, 3=DELETE) на основе исходных данных. Если метод не указан, используй 1 (POST) для JSON.
@@ -451,10 +490,11 @@ function detectFormatCfg(valueType, key, sourceJson) {
  * Генерирует целевой JSON (fields и request) на основе источника данных
  * @param {string} sourceType - Тип источника: 'url', 'curl', 'json'
  * @param {string} sourceValue - Содержимое источника
+ * @param {string[]} languages - Список кодов языков для генерации названий полей
  * @returns {Promise<Object>} - Объект с полями fields и request
  */
-export async function generateTargetJson(sourceType, sourceValue) {
-  const instructionPrompt = getInstructionPrompt();
+export async function generateTargetJson(sourceType, sourceValue, languages = ['en', 'ru']) {
+  const instructionPrompt = getInstructionPrompt(languages);
   
   // Формируем промпт на основе типа источника
   let userPrompt = '';
@@ -582,12 +622,20 @@ export async function generateTargetJson(sourceType, sourceValue) {
 
       // Создаём rowSection из найденных полей и добавляем в список
       const titleWords = arrayPath.replace(/__/g, ' ');
+      const sectionTitles = {};
+      for (const lang of languages) {
+        const key = langToTitleKey(lang);
+        if (lang === 'ru') {
+          sectionTitles[key] = titleWords;
+        } else {
+          sectionTitles[key] = titleWords.replace(/\b\w/g, l => l.toUpperCase());
+        }
+      }
       result.rowSections.push({
         id: null,
         versionId: null,
         data: { code: arrayPath, customFieldsIsEditable: false, customFieldsIsRequired: false },
-        titleEn: titleWords.replace(/\b\w/g, l => l.toUpperCase()),
-        titleRu: titleWords,
+        ...sectionTitles,
         fields: promoted,
         customFieldsSetLinks: [],
       });

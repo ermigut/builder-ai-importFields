@@ -2,8 +2,12 @@
   margin-top: 2rem;
 }
 
-.row-sections-container h3 {
-  margin-bottom: 1rem;
+.row-sections-container > h3 {
+  margin: 0 0 1rem 0;
+  color: #333;
+  text-align: center;
+  font-size: 1.17rem;
+  font-weight: 600;
 }
 
 .row-sections-list {
