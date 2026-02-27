@@ -293,12 +293,16 @@ export function getInstructionPrompt() {
 16. Всегда возвращай валидный JSON без дополнительного текста
 17. **Кастомные поля:** Полностью ИГНОРИРУЙ любые свойства JSON, связанные с кастомными полями (customFields, custom_fields, cfs, cfsMappings, cfs_mappings и их вариации). НЕ создавай для них поля в массиве "fields" и НЕ добавляй их в request.fields. Если встретишь такой ключ — пропусти его целиком вместе со всем содержимым.
 18. **Массивы объектов → Строковые секции (rowSections):** Если в JSON встречается свойство, значение которого является МАССИВОМ ОБЪЕКТОВ (например "items": [{"id": 1, "name": "foo"}, ...]), создай для него запись в массиве "rowSections" вместо обычного поля в "fields". НЕ создавай такой ключ в "fields". Поля строковой секции формируй на основе свойств ПЕРВОГО элемента массива. Массивы примитивов (строк, чисел) — это обычные поля типа StringArray (101) или IntArray (102), их в rowSections НЕ помещай. КРИТИЧЕСКИ ВАЖНО: НЕ добавляй в массив "fields" поля, которые являются свойствами элементов массива объектов — они должны быть ТОЛЬКО в rowSections[].fields. Плоские свойства JSON (строки, числа, булевы и т.д.) ВСЕГДА помещай в "fields" как обычно — даже если рядом есть массивы объектов. Массив "fields" бывает пустым [] ТОЛЬКО если в JSON вообще нет плоских свойств (есть лишь массивы объектов).
-   Пример 1 — только массив, нет плоских полей, JSON {"lead_lists": [{"id": "abc", "name": "List 1"}]}:
+   ⚠️ КРИТИЧЕСКИ ВАЖНО — ОБЫЧНЫЕ ОБЪЕКТЫ (не массивы!): Если значение свойства является обычным объектом (не массивом!), например {"buyer": {"firstName": "John", "lastName": "Doe"}}, — это НЕ rowSection! Обычные вложенные объекты ВСЕГДА разворачивай в плоские поля через "__" нотацию и помещай в "fields". rowSections используются ИСКЛЮЧИТЕЛЬНО для массивов объектов ([{...}, {...}]).
+   Пример 1 — только массив объектов, нет плоских полей, JSON {"lead_lists": [{"id": "abc", "name": "List 1"}]}:
    ПРАВИЛЬНО: "fields": [], "rowSections": [{"data": {"code": "lead_lists"}, "fields": [{"data": {"code": "lead_lists__id"}}, {"data": {"code": "lead_lists__name"}}]}]
    НЕПРАВИЛЬНО: "fields": [{"data": {"code": "lead_lists__id"}}, {"data": {"code": "lead_lists__name"}}], "rowSections": []
    Пример 2 — смешанный, JSON {"orgId": 123, "rev": "abc", "lead_lists": [{"id": "x", "name": "y"}]}:
    ПРАВИЛЬНО: "fields": [{"data": {"code": "orgId"}}, {"data": {"code": "rev"}}], "rowSections": [{"data": {"code": "lead_lists"}, "fields": [{"data": {"code": "lead_lists__id"}}, {"data": {"code": "lead_lists__name"}}]}]
    НЕПРАВИЛЬНО: "fields": [], "rowSections": [...]  — нельзя опускать плоские поля orgId и rev!
+   Пример 3 — вложенные объекты (НЕ массивы!), JSON {"name": "Acme", "buyer": {"firstName": "John", "email": "j@e.com"}, "salesRep": {"firstName": "Jane", "email": "s@e.com"}}:
+   ПРАВИЛЬНО: "fields": [{"data": {"code": "name"}}, {"data": {"code": "buyer__firstName"}}, {"data": {"code": "buyer__email"}}, {"data": {"code": "salesRep__firstName"}}, {"data": {"code": "salesRep__email"}}], "rowSections": []
+   НЕПРАВИЛЬНО: "fields": [{"data": {"code": "name"}}], "rowSections": [{"data": {"code": "buyer"}, ...}, {"data": {"code": "salesRep"}, ...}]  — buyer и salesRep это объекты, а не массивы, поэтому они НЕ идут в rowSections!
 19. **Коды строковых секций и их полей:** Код самой секции должен отражать ПОЛНЫЙ путь к массиву, используя "__" вместо точек (так же как и обычные поля). Например, если JSON содержит {"data": {"contacts": [...]}}, то код секции должен быть "data__contacts". Для полей внутри rowSections используй префикс в виде кода секции: "{код_секции}__{имя_свойства}". Например, "data__contacts__name". КРИТИЧЕСКИ ВАЖНО: НИКОГДА не используй числовые индексы в кодах полей строковых секций. Правильно: "lead_lists__id", "lead_lists__name". НЕПРАВИЛЬНО: "lead_lists__0__id", "lead_lists__0__name". Индексы массива в кодах полей недопустимы.
 20. **Глобальная уникальность кодов:** Все коды во всех массивах (fields[].data.code, rowSections[].data.code, rowSections[].fields[].data.code) должны быть ГЛОБАЛЬНО УНИКАЛЬНЫМИ — никакие два кода не должны совпадать между собой.`;
 }
@@ -521,6 +525,31 @@ export async function generateTargetJson(sourceType, sourceValue) {
 
   // Инициализируем rowSections если AI не вернул это поле
   if (!Array.isArray(result.rowSections)) result.rowSections = [];
+
+  // Демотирование: если AI ошибочно поместил обычный объект (не массив!) в rowSections,
+  // возвращаем его поля обратно в result.fields и удаляем секцию.
+  if (sourceJsonForFields && result.rowSections.length > 0) {
+    if (!Array.isArray(result.fields)) result.fields = [];
+    result.rowSections = result.rowSections.filter(section => {
+      if (!section?.data?.code) return false;
+      const codePath = String(section.data.code).replace(/__/g, '.');
+      const keys = codePath.split('.');
+      let val = sourceJsonForFields;
+      for (const k of keys) {
+        if (val && typeof val === 'object' && k in val) val = val[k];
+        else { val = undefined; break; }
+      }
+      // Если значение является массивом объектов — оставляем секцию
+      if (Array.isArray(val) && val.length > 0 && val[0] !== null && typeof val[0] === 'object') {
+        return true;
+      }
+      // Иначе — демотируем: переносим поля секции в result.fields
+      if (section.fields && Array.isArray(section.fields) && section.fields.length > 0) {
+        result.fields.push(...section.fields);
+      }
+      return false; // удаляем секцию из rowSections
+    });
+  }
 
   // Авто-продвижение: если AI поместил поля элементов массива в result.fields вместо rowSections,
   // автоматически определяем такие поля по исходному JSON и перемещаем их в rowSection.
