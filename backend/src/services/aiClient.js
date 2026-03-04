@@ -313,7 +313,7 @@ ${sectionFieldTitleLines},
    - 5 (DateTime) - для даты и времени (форматы ISO, unix timestamp и т.д.)
    - 7 (File) - для файлов, путей к файлам, base64-encoded данных
    - 8 (Date) - для дат (без времени)
-   - 9 (Boolean) - для булевых значений (true/false)
+   - 9 (Boolean) - ТОЛЬКО для настоящих JSON-булевых значений (true/false без кавычек). Строки "0", "1", "true", "false" в кавычках — это String (1), НЕ Boolean!
    - 101 (StringArray) - для массивов строк
    - 102 (IntArray) - для массивов целых чисел
    ВАЖНО: Unix timestamp должен определяться как 5 (DateTime), а НЕ как 2 (Int):
@@ -322,6 +322,7 @@ ${sectionFieldTitleLines},
    Если число выглядит как unix timestamp (10 или 13 цифр в указанных диапазонах), это дата и время.
    Примеры: строка "test" -> 1, число 42 -> 2, число 3.14 -> 3, unix timestamp в секундах 1770729544 -> 5 (DateTime), unix timestamp в миллисекундах 1770732087654 -> 5 (DateTime), true/false -> 9, массив ["a", "b"] -> 101, массив [1, 2, 3] -> 102.
 8. **Названия полей:** Используй осмысленные названия на всех указанных языках: ${langListStr}. ОБЯЗАТЕЛЬНО заполняй названия на КАЖДОМ из перечисленных языков — не пропускай ни один язык. Примеры переводов: для "name" -> ${exampleTitleStr}; для "amount" -> ${exampleAmountStr}; для "status" -> ${exampleStatusStr}.
+   ⚠️ **КОНТЕКСТ ДЛЯ ВЛОЖЕННЫХ ПОЛЕЙ:** Если ключ сам по себе неоднозначен (например: id, name, type, month, day, value, text, title, code, order, count, public, flag и т.п.), ОБЯЗАТЕЛЬНО включай в название контекст родительского объекта. Примеры: поле "month" внутри "birthdate" → "Birthdate Month" / "Месяц дня рождения"; поле "id" внутри "pipeline" → "Pipeline ID" / "ID воронки"; поле "name" внутри "column" → "Column Name" / "Название столбца"; поле "public" внутри "profile_ids" → "Profile Public ID" / "Публичный ID профиля". Исключение 1: если ключ уже полностью описывает себя (например, "businessEmail", "fullName", "created_at") — родительский контекст не нужен. Исключение 2: для прямых полей элементов rowSection (массива) НЕ добавляй название самого массива как контекст — пользователь и так видит заголовок секции. Пример: поле "id" внутри массива "lead_lists" → просто "ID" / "ID", НЕ "Lead List ID"; поле "status" → просто "Status" / "Статус".
 9. В "request.data.url" ОБЯЗАТЕЛЬНО укажи РЕАЛЬНЫЙ URL из исходных данных (если в исходных данных есть URL, используй его, иначе используй пустую строку, НЕ используй плейсхолдеры типа "<URL внешнего API>")
 10. В "request.data.apiDocUrl" укажи URL документации, если он есть в исходных данных, иначе пустую строку (НЕ используй плейсхолдеры)
 11. В "request.data.method" укажи код HTTP-метода (0=GET, 1=POST, 2=PUT, 3=DELETE) на основе исходных данных. Если метод не указан, используй 1 (POST) для JSON.
@@ -524,7 +525,15 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
   }
 
   const result = await generateJsonFromPrompt(userPrompt);
-  
+
+  // Логируем сырой ответ AI до постобработки
+  console.log('[AI RAW RESPONSE]', JSON.stringify({
+    fieldsCount: result.fields?.length,
+    rowSectionsCount: result.rowSections?.length,
+    fields: result.fields?.map(f => ({ code: f.data?.code, valueType: f.data?.valueType, titleEn: f.titleEn })),
+    rowSections: result.rowSections?.map(s => ({ code: s.data?.code, fieldsCount: s.fields?.length, fields: s.fields?.map(f => ({ code: f.data?.code, valueType: f.data?.valueType })) })),
+  }, null, 2));
+
   // Сохраняем исходный JSON для определения форматов дат и unix timestamp в постобработке
   let sourceJson = null;
   if (sourceType === 'json') {
@@ -566,6 +575,22 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
   // Инициализируем rowSections если AI не вернул это поле
   if (!Array.isArray(result.rowSections)) result.rowSections = [];
 
+  // Рекурсивный поиск значения в sourceJson с поддержкой промежуточных leading-underscore объектов.
+  // AI иногда пропускает такие ключи (напр. _lead_info) при генерации кодов.
+  const resolveWithIntermediates = (obj, ks) => {
+    if (ks.length === 0) return obj;
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return undefined;
+    const [k, ...rest] = ks;
+    if (k in obj) return resolveWithIntermediates(obj[k], rest);
+    for (const [vk, vv] of Object.entries(obj)) {
+      if (vk.startsWith('_') && vv !== null && typeof vv === 'object' && !Array.isArray(vv)) {
+        const found = resolveWithIntermediates(vv, ks);
+        if (found !== undefined) return found;
+      }
+    }
+    return undefined;
+  };
+
   // Демотирование: если AI ошибочно поместил обычный объект (не массив!) в rowSections,
   // возвращаем его поля обратно в result.fields и удаляем секцию.
   if (sourceJsonForFields && result.rowSections.length > 0) {
@@ -574,11 +599,7 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       if (!section?.data?.code) return false;
       const codePath = String(section.data.code).replace(/__/g, '.');
       const keys = codePath.split('.');
-      let val = sourceJsonForFields;
-      for (const k of keys) {
-        if (val && typeof val === 'object' && k in val) val = val[k];
-        else { val = undefined; break; }
-      }
+      const val = resolveWithIntermediates(sourceJsonForFields, keys);
       // Если значение является массивом объектов — оставляем секцию
       if (Array.isArray(val) && val.length > 0 && val[0] !== null && typeof val[0] === 'object') {
         return true;
@@ -791,31 +812,191 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
     });
   }
 
+  // RowSection gap-filling: создаём rowSections для массивов объектов, пропущенных AI.
+  // Рекурсивно обходит sourceJson и создаёт недостающие секции (включая вложенные).
+  if (sourceJsonForFields) {
+    if (!Array.isArray(result.rowSections)) result.rowSections = [];
+    const normCode = (c) => c.split('__').map(s => s.replace(/^_+/, '')).join('__');
+    // collapseCode: убирает промежуточные leading-underscore сегменты (AI их пропускает при генерации)
+    // и стрипует leading underscores с последнего сегмента.
+    // profile___lead_info__work_experience → profile__work_experience
+    // profile___messages → profile__messages
+    const collapseCode = (c) => c.split('__')
+      .filter((s, i, arr) => i === arr.length - 1 || !s.startsWith('_'))
+      .map(s => s.replace(/^_+/, ''))
+      .join('__');
+    const existingSectionCodes = new Set(
+      result.rowSections.map(s => (s.data?.code || '').replace(/\./g, '__'))
+    );
+    const normalizedSectionCodes = new Set([...existingSectionCodes].map(normCode));
+    const collapsedSectionCodes = new Set([...existingSectionCodes].map(collapseCode));
+    const missingSections = [];
+
+    const findMissingArrays = (obj, prefix = '') => {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+      for (const [key, value] of Object.entries(obj)) {
+        if (isCustomFieldKey(key)) continue;
+        const code = prefix ? `${prefix}__${key}` : key;
+        if (Array.isArray(value) && value.length > 0 && value[0] !== null && typeof value[0] === 'object') {
+          if (!existingSectionCodes.has(code) && !normalizedSectionCodes.has(normCode(code)) && !collapsedSectionCodes.has(collapseCode(code))) {
+            missingSections.push({ code, firstItem: value[0] });
+            existingSectionCodes.add(code);
+            normalizedSectionCodes.add(normCode(code));
+            collapsedSectionCodes.add(collapseCode(code));
+          }
+        } else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+          findMissingArrays(value, code);
+        }
+      }
+    };
+    findMissingArrays(sourceJsonForFields);
+
+    if (missingSections.length > 0) {
+      // Определяет valueType из значения (включая строковые unix timestamp)
+      const detectValueTypeFromValue = (v) => {
+        if (Array.isArray(v)) {
+          const first = v.find(item => item !== null && item !== '');
+          return (first !== undefined && typeof first === 'number') ? 102 : 101;
+        }
+        if (typeof v === 'boolean') return 9;
+        if (typeof v === 'number') {
+          if (Number.isInteger(v)) {
+            return ((v >= 1e9 && v <= 9999999999) || (v >= 1e12 && v <= 9999999999999)) ? 5 : 2;
+          }
+          return 3;
+        }
+        if (typeof v === 'string') {
+          if (/^\d{4}-\d{2}-\d{2}T/.test(v)) return 5;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return 4;
+          const n = parseInt(v, 10);
+          if (!isNaN(n) && String(n) === v) {
+            if ((n >= 1e9 && n <= 9999999999) || (n >= 1e12 && n <= 9999999999999)) return 5;
+            // Строковые числа ("105", "0") остаются String — только unix timestamp определяем выше
+          }
+        }
+        return 1;
+      };
+
+      // Строит поля секции из первого элемента массива
+      const buildSectionFields = (item, sectionCode) => {
+        const fields = [];
+        // Генерирует заголовок с родительским контекстом (всегда, если есть родитель)
+        const toTitleCase = (s) => s.replace(/\b\w/g, c => c.toUpperCase());
+        const segToTitle = (s) => toTitleCase(s.replace(/^_+/, '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'));
+        const makeAutoTitle = (k, codeStr) => {
+          const leafTitle = segToTitle(k);
+          const parts = codeStr.split('__');
+          if (parts.length >= 3) {
+            return `${segToTitle(parts[parts.length - 2])} ${leafTitle}`;
+          }
+          return leafTitle;
+        };
+        const recurse = (obj, prefix) => {
+          for (const [k, v] of Object.entries(obj)) {
+            if (isCustomFieldKey(k)) continue;
+            const fieldCode = `${prefix}__${k}`;
+            if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+              recurse(v, fieldCode);
+            } else if (!Array.isArray(v) || v.length === 0 || typeof v[0] !== 'object') {
+              const valueType = detectValueTypeFromValue(v);
+              const autoTitle = makeAutoTitle(k, fieldCode);
+              const fieldTitles = {};
+              for (const lang of languages) fieldTitles[langToTitleKey(lang)] = autoTitle;
+              fields.push({
+                id: null, versionId: null,
+                data: { code: fieldCode, isEditable: true, isRequired: false, valueType, formatCfg: null },
+                ...fieldTitles, children: [], cfsMappings: [],
+              });
+            }
+          }
+        };
+        recurse(item, sectionCode);
+        return fields;
+      };
+
+      const newSections = missingSections.map(({ code, firstItem }) => {
+        const sectionFields = buildSectionFields(firstItem, code);
+        const sectionTitleWord = code.split('__').pop()
+          .replace(/^_+/, '')
+          .replace(/([a-z])([A-Z])/g, '$1 $2')
+          .replace(/^./, c => c.toUpperCase());
+        const sectionTitles = {};
+        for (const lang of languages) sectionTitles[langToTitleKey(lang)] = sectionTitleWord;
+        return {
+          id: null, versionId: null,
+          data: { code, customFieldsIsEditable: false, customFieldsIsRequired: false },
+          ...sectionTitles, fields: sectionFields, customFieldsSetLinks: [],
+        };
+      });
+
+      // Вторичный AI-вызов для перевода: отправляем авто-заголовки (с контекстом), а не сырые ключи
+      try {
+        const enKey = langToTitleKey(languages.includes('en') ? 'en' : languages[0]);
+        // Строим map: авто-заголовок → [объекты для применения перевода]
+        const titleMap = new Map();
+        const registerTitle = (obj) => {
+          const title = obj[enKey];
+          if (!title) return;
+          if (!titleMap.has(title)) titleMap.set(title, []);
+          titleMap.get(title).push(obj);
+        };
+        newSections.forEach(section => {
+          registerTitle(section);
+          section.fields.forEach(f => registerTitle(f));
+        });
+        const uniqueTitles = [...titleMap.keys()];
+        const langList = languages.map(lang => `${lang.toUpperCase()} (${LANG_NAMES[lang] || lang})`).join(', ');
+        const titleExamples = languages.map(lang => `"${langToTitleKey(lang)}": "..."`).join(', ');
+        const tr = await generateJsonFromPrompt(
+          `Translate these field/section titles into: ${langList}.\nTitles: ${uniqueTitles.join(', ')}\nReturn: {"title": {${titleExamples}}, ...}\nExample: "Birthdate Month"→{"titleEn":"Birthdate Month","titleRu":"Месяц дня рождения"}, "work_experience"→{"titleEn":"Work Experience","titleRu":"Опыт работы"}`,
+          'gpt-4o-mini'
+        );
+        titleMap.forEach((objs, title) => {
+          const t = tr[title];
+          if (t && typeof t === 'object') {
+            objs.forEach(obj => {
+              for (const lang of languages) { const tk = langToTitleKey(lang); if (t[tk]) obj[tk] = t[tk]; }
+            });
+          }
+        });
+      } catch (_) { /* оставляем авто-заголовки */ }
+
+      result.rowSections.push(...newSections);
+
+      // Убираем из result.fields поля, конфликтующие с новыми секциями
+      const newCodes = new Set(newSections.map(s => s.data.code));
+      const newCodesNorm = new Set([...newCodes].map(normCode));
+      if (result.fields && Array.isArray(result.fields)) {
+        result.fields = result.fields.filter(field => {
+          const code = (field.data?.code || '').replace(/\./g, '__');
+          const codeNorm = normCode(code);
+          return ![...newCodesNorm].some(sc => codeNorm === sc || codeNorm.startsWith(sc + '__'));
+        });
+      }
+    }
+  }
+
   // Постобработка: заменяем точки на "__" в кодах полей и исправляем типы
   if (result.fields && Array.isArray(result.fields)) {
     result.fields = result.fields.map(field => {
       // Исправляем тип для unix timestamp
       if (field.data && field.data.code && sourceJsonForFields) {
-        // Получаем значение из исходного JSON по коду поля
-        const code = field.data.code.replace(/__/g, '.'); // Преобразуем код обратно в путь
-        const keys = code.split('.');
-        let value = sourceJsonForFields;
-        for (const k of keys) {
-          if (value && typeof value === 'object' && k in value) {
-            value = value[k];
-          } else {
-            value = null;
-            break;
-          }
-        }
+        // Получаем значение из исходного JSON по коду поля (с поддержкой leading-underscore промежуточных ключей)
+        const keys = (field.data.code || '').replace(/\./g, '__').split('__');
+        const value = resolveWithIntermediates(sourceJsonForFields, keys) ?? null;
 
-        // Если значение - число и выглядит как unix timestamp (10 или 13 цифр)
-        // и текущий тип - Int (2), меняем на DateTime (5)
-        if (value !== null && typeof value === 'number' && Number.isInteger(value) &&
-            field.data.valueType === 2) {
-          if ((value >= 1000000000 && value <= 9999999999) || // Секунды (10 цифр)
-              (value >= 1000000000000 && value <= 9999999999999)) { // Миллисекунды (13 цифр)
-            field.data.valueType = 5; // DateTime
+        if (value !== null) {
+          // AI сказал Boolean/Int, но значение в JSON — строка → String
+          if (typeof value === 'string') {
+            if (field.data.valueType === 9) field.data.valueType = 1; // Boolean → String
+            if (field.data.valueType === 2) field.data.valueType = 1; // Int → String
+          }
+          // Число-unix timestamp и тип Int → DateTime
+          if (typeof value === 'number' && Number.isInteger(value) && field.data.valueType === 2) {
+            if ((value >= 1000000000 && value <= 9999999999) ||
+                (value >= 1000000000000 && value <= 9999999999999)) {
+              field.data.valueType = 5;
+            }
           }
         }
       }
@@ -828,12 +1009,41 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
     });
   }
 
+  // Коррекция типов в rowSections: если AI назначил Boolean/Int, но реальное значение — строка.
+  if (sourceJsonForFields && result.rowSections && Array.isArray(result.rowSections)) {
+    result.rowSections.forEach(section => {
+      if (!section.fields || !Array.isArray(section.fields)) return;
+      const sectionKeys = (section.data?.code || '').replace(/\./g, '__').split('__');
+      const arrVal = resolveWithIntermediates(sourceJsonForFields, sectionKeys);
+      const firstItem = Array.isArray(arrVal) && arrVal.length > 0 ? arrVal[0] : null;
+      if (!firstItem || typeof firstItem !== 'object') return;
+      section.fields.forEach(field => {
+        if (!field.data) return;
+        const fieldCode = (field.data.code || '').replace(/\./g, '__');
+        const sectionPrefix = sectionKeys.join('__') + '__';
+        const subPath = fieldCode.startsWith(sectionPrefix) ? fieldCode.slice(sectionPrefix.length) : fieldCode;
+        const subKeys = subPath.split('__');
+        let val = firstItem;
+        for (const k of subKeys) {
+          if (val && typeof val === 'object' && k in val) val = val[k]; else { val = undefined; break; }
+        }
+        if (val === undefined) return;
+        // AI сказал Boolean, но значение — строка → String
+        if (field.data.valueType === 9 && typeof val === 'string') field.data.valueType = 1;
+        // AI сказал Int, но значение — строка → String
+        if (field.data.valueType === 2 && typeof val === 'string') field.data.valueType = 1;
+      });
+    });
+  }
+
   // Gap-filling: для plain nested objects в sourceJson — создаём поля, пропущенные AI.
   // Охватывает два случая: AI полностью проигнорировал объект, или demotion не восстановил поля.
   if (sourceJsonForFields) {
+    const normalizeCode = (c) => c.split('__').map(s => s.replace(/^_+/, '')).join('__');
     const existingCodes = new Set(
       (result.fields || []).map(f => (f.data?.code || '').replace(/\./g, '__'))
     );
+    const normalizedExistingCodes = new Set([...existingCodes].map(normalizeCode));
     const missingFields = [];
 
     const fillMissing = (obj, prefix) => {
@@ -842,13 +1052,25 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
         if (isCustomFieldKey(key)) continue;
         const code = `${prefix}__${key}`;
         if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-          // Вложенный plain объект — идём глубже
+          // Вложенный plain объект — если AI ошибочно создал плоское поле для этого пути, удаляем
+          const normC = normalizeCode(code);
+          if (result.fields && (existingCodes.has(code) || normalizedExistingCodes.has(normC))) {
+            result.fields = result.fields.filter(f => {
+              const fc = (f.data?.code || '').replace(/\./g, '__');
+              return normalizeCode(fc) !== normC;
+            });
+            existingCodes.delete(code);
+            normalizedExistingCodes.delete(normC);
+          }
           fillMissing(value, code);
         } else if (!Array.isArray(value) || value.length === 0 || typeof value[0] !== 'object') {
           // Скалярное значение или массив примитивов — это поле
-          if (!existingCodes.has(code)) {
+          if (!existingCodes.has(code) && !normalizedExistingCodes.has(normalizeCode(code))) {
             let valueType = 1;
-            if (typeof value === 'boolean') valueType = 9;
+            if (Array.isArray(value)) {
+              const first = value.find(v => v !== null && v !== '');
+              valueType = (first !== undefined && typeof first === 'number') ? 102 : 101;
+            } else if (typeof value === 'boolean') valueType = 9;
             else if (typeof value === 'number') {
               if (Number.isInteger(value)) {
                 if ((value >= 1e9 && value <= 9999999999) || (value >= 1e12 && value <= 9999999999999)) valueType = 5;
@@ -860,9 +1082,13 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
               if (/^\d{4}-\d{2}-\d{2}T/.test(value)) valueType = 5;
               else if (/^\d{4}-\d{2}-\d{2}$/.test(value)) valueType = 4;
             }
-            // Авто-заголовок из имени ключа: camelCase → слова с большой буквы
-            const autoTitle = key.replace(/([a-z])([A-Z])/g, '$1 $2')
-              .replace(/^./, c => c.toUpperCase());
+            // Авто-заголовок с родительским контекстом (всегда, если есть родитель)
+            const _toTitleCase = (s) => s.replace(/\b\w/g, c => c.toUpperCase());
+            const _seg = (s) => _toTitleCase(s.replace(/^_+/, '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'));
+            const _codeParts = code.split('__');
+            const autoTitle = _codeParts.length >= 3
+              ? `${_seg(_codeParts[_codeParts.length - 2])} ${_seg(key)}`
+              : _seg(key);
             const fieldTitles = {};
             for (const lang of languages) {
               fieldTitles[langToTitleKey(lang)] = autoTitle;
@@ -876,6 +1102,7 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
               cfsMappings: [],
             });
             existingCodes.add(code);
+            normalizedExistingCodes.add(normalizeCode(code));
           }
         }
         // Массив объектов — пропускаем (обрабатывается rowSections)
@@ -891,26 +1118,36 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
     }
 
     if (missingFields.length > 0) {
-      // Вторичный AI-вызов для перевода названий gap-filled полей
+      // Вторичный AI-вызов: отправляем авто-заголовки (с контекстом), а не сырые ключи
       if (languages.length > 1) {
         try {
-          const fieldNames = [...new Set(missingFields.map(f => f.data.code.split('__').pop()))];
+          const enKey = langToTitleKey(languages.includes('en') ? 'en' : languages[0]);
+          // Строим map: авто-заголовок → [поля]
+          const titleMap = new Map();
+          missingFields.forEach(field => {
+            const title = field[enKey];
+            if (!title) return;
+            if (!titleMap.has(title)) titleMap.set(title, []);
+            titleMap.get(title).push(field);
+          });
+          const uniqueTitles = [...titleMap.keys()];
           const langList = languages.map(lang => `${lang.toUpperCase()} (${LANG_NAMES[lang] || lang})`).join(', ');
           const titleExamples = languages.map(lang => `"${langToTitleKey(lang)}": "..."`).join(', ');
-          const translationPrompt = `Translate these JSON field names into human-readable titles in the following languages: ${langList}.
-Field names: ${fieldNames.join(', ')}
-Return JSON: {"fieldName": {${titleExamples}}, ...}
-Examples: "postalCode" → {"titleEn": "Postal Code", "titleRu": "Почтовый индекс", "titlePt": "CEP", "titleEs": "Código Postal", "titleTr": "Posta Kodu", "titleFr": "Code Postal", "titleDe": "Postleitzahl"}.
+          const translationPrompt = `Translate these field titles into human-readable names in: ${langList}.
+Titles: ${uniqueTitles.join(', ')}
+Return JSON: {"title": {${titleExamples}}, ...}
+Examples: "Birthdate Month" → {"titleEn": "Birthdate Month", "titleRu": "Месяц дня рождения"}, "Pipeline ID" → {"titleEn": "Pipeline ID", "titleRu": "ID воронки"}.
 Use only the languages listed above.`;
           const translations = await generateJsonFromPrompt(translationPrompt, 'gpt-4o-mini');
-          missingFields.forEach(field => {
-            const key = field.data.code.split('__').pop();
-            const tr = translations[key];
+          titleMap.forEach((fields, title) => {
+            const tr = translations[title];
             if (tr && typeof tr === 'object') {
-              for (const lang of languages) {
-                const titleKey = langToTitleKey(lang);
-                if (tr[titleKey] && typeof tr[titleKey] === 'string') field[titleKey] = tr[titleKey];
-              }
+              fields.forEach(field => {
+                for (const lang of languages) {
+                  const titleKey = langToTitleKey(lang);
+                  if (tr[titleKey] && typeof tr[titleKey] === 'string') field[titleKey] = tr[titleKey];
+                }
+              });
             }
           });
         } catch (_) { /* оставляем авто-заголовки если перевод не удался */ }
@@ -945,6 +1182,75 @@ Use only the languages listed above.`;
       const idxB = pathIndex.get((b.data?.code || '').replace(/\./g, '__')) ?? Infinity;
       return idxA - idxB;
     });
+  }
+
+  // Разрешение дублирующихся заголовков: для полей с одинаковыми EN-названиями
+  // постепенно расширяем контекст (добавляем дедушку, прадедушку), пока не станут уникальными.
+  // Затем делаем вторичный AI-вызов для перевода изменённых заголовков.
+  if (result.fields && Array.isArray(result.fields) && languages.length > 0) {
+    const toTitleCase = (s) => s.replace(/\b\w/g, c => c.toUpperCase());
+    const makeContextTitle = (codeStr, levels) => {
+      const parts = codeStr.replace(/\./g, '__').split('__');
+      const leaf = toTitleCase(parts[parts.length - 1].replace(/^_+/, '').replace(/_/g, ' ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2'));
+      const parentParts = parts.slice(Math.max(0, parts.length - 1 - levels), parts.length - 1);
+      const parentTitle = parentParts
+        .map(p => toTitleCase(p.replace(/^_+/, '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2')))
+        .join(' ');
+      return parentTitle ? `${parentTitle} ${leaf}` : leaf;
+    };
+    const enLang = languages.includes('en') ? 'en' : languages[0];
+    const enKey = langToTitleKey(enLang);
+    const byTitle = new Map();
+    result.fields.forEach(f => {
+      const t = f[enKey];
+      if (!t) return;
+      if (!byTitle.has(t)) byTitle.set(t, []);
+      byTitle.get(t).push(f);
+    });
+    // Собираем поля, у которых нужно изменить заголовок
+    const disambiguated = []; // { field, newEnTitle }
+    byTitle.forEach(fields => {
+      if (fields.length <= 1) return;
+      for (let levels = 2; levels <= 6; levels++) {
+        const newTitles = fields.map(f => makeContextTitle(f.data?.code || '', levels));
+        if (new Set(newTitles).size === fields.length) {
+          fields.forEach((f, i) => disambiguated.push({ field: f, newEnTitle: newTitles[i] }));
+          return;
+        }
+      }
+    });
+    if (disambiguated.length > 0) {
+      // Применяем новые EN-заголовки (остальные языки пока ставим тот же EN)
+      disambiguated.forEach(({ field, newEnTitle }) => {
+        for (const lang of languages) field[langToTitleKey(lang)] = newEnTitle;
+      });
+      // Переводим через вторичный AI-вызов
+      if (languages.length > 1) {
+        try {
+          const titleMap = new Map();
+          disambiguated.forEach(({ field, newEnTitle }) => {
+            if (!titleMap.has(newEnTitle)) titleMap.set(newEnTitle, []);
+            titleMap.get(newEnTitle).push(field);
+          });
+          const uniqueTitles = [...titleMap.keys()];
+          const langList = languages.map(l => `${l.toUpperCase()} (${LANG_NAMES[l] || l})`).join(', ');
+          const titleExamples = languages.map(l => `"${langToTitleKey(l)}": "..."`).join(', ');
+          const tr = await generateJsonFromPrompt(
+            `Translate these field titles into human-readable names in: ${langList}.\nTitles: ${uniqueTitles.join(', ')}\nReturn JSON: {"<exact title>": {${titleExamples}}, ...}\nExamples: "Lead Info Profile IDs Public" → {"titleEn": "Lead Info Profile IDs Public", "titleRu": "Публичный ID профиля в Lead Info"}, "Profile Profile IDs Public" → {"titleEn": "Profile IDs Public", "titleRu": "Публичный ID профиля"}.\nUse only languages listed above.`,
+            'gpt-4o-mini'
+          );
+          titleMap.forEach((fields, title) => {
+            const t = tr[title];
+            if (t && typeof t === 'object') {
+              fields.forEach(f => {
+                for (const lang of languages) { const tk = langToTitleKey(lang); if (t[tk]) f[tk] = t[tk]; }
+              });
+            }
+          });
+        } catch (_) { /* оставляем EN-заголовки */ }
+      }
+    }
   }
 
   // Для JSON и curl: все поля по умолчанию редактируемые (isEditable = true)
