@@ -583,9 +583,17 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       if (Array.isArray(val) && val.length > 0 && val[0] !== null && typeof val[0] === 'object') {
         return true;
       }
-      // Иначе — демотируем: переносим поля секции в result.fields
+      // Иначе — демотируем: переносим поля секции в result.fields с нормализованными кодами
+      const sectionCode = String(section.data.code).replace(/\./g, '__');
       if (section.fields && Array.isArray(section.fields) && section.fields.length > 0) {
-        result.fields.push(...section.fields);
+        const prefix = sectionCode + '__';
+        const demotedFields = section.fields.map(f => {
+          if (!f?.data?.code) return f;
+          const aiCode = String(f.data.code).replace(/\./g, '__');
+          const normalizedCode = aiCode.startsWith(prefix) ? aiCode : `${sectionCode}__${aiCode}`;
+          return { ...f, data: { ...f.data, code: normalizedCode } };
+        });
+        result.fields.push(...demotedFields);
       }
       return false; // удаляем секцию из rowSections
     });
@@ -817,6 +825,125 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
         field.data.code = field.data.code.replace(/\./g, '__');
       }
       return field;
+    });
+  }
+
+  // Gap-filling: для plain nested objects в sourceJson — создаём поля, пропущенные AI.
+  // Охватывает два случая: AI полностью проигнорировал объект, или demotion не восстановил поля.
+  if (sourceJsonForFields) {
+    const existingCodes = new Set(
+      (result.fields || []).map(f => (f.data?.code || '').replace(/\./g, '__'))
+    );
+    const missingFields = [];
+
+    const fillMissing = (obj, prefix) => {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+      for (const [key, value] of Object.entries(obj)) {
+        if (isCustomFieldKey(key)) continue;
+        const code = `${prefix}__${key}`;
+        if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+          // Вложенный plain объект — идём глубже
+          fillMissing(value, code);
+        } else if (!Array.isArray(value) || value.length === 0 || typeof value[0] !== 'object') {
+          // Скалярное значение или массив примитивов — это поле
+          if (!existingCodes.has(code)) {
+            let valueType = 1;
+            if (typeof value === 'boolean') valueType = 9;
+            else if (typeof value === 'number') {
+              if (Number.isInteger(value)) {
+                if ((value >= 1e9 && value <= 9999999999) || (value >= 1e12 && value <= 9999999999999)) valueType = 5;
+                else valueType = 2;
+              } else {
+                valueType = 3;
+              }
+            } else if (typeof value === 'string') {
+              if (/^\d{4}-\d{2}-\d{2}T/.test(value)) valueType = 5;
+              else if (/^\d{4}-\d{2}-\d{2}$/.test(value)) valueType = 4;
+            }
+            // Авто-заголовок из имени ключа: camelCase → слова с большой буквы
+            const autoTitle = key.replace(/([a-z])([A-Z])/g, '$1 $2')
+              .replace(/^./, c => c.toUpperCase());
+            const fieldTitles = {};
+            for (const lang of languages) {
+              fieldTitles[langToTitleKey(lang)] = autoTitle;
+            }
+            missingFields.push({
+              id: null,
+              versionId: null,
+              data: { code, isEditable: true, isRequired: false, valueType, formatCfg: null },
+              ...fieldTitles,
+              children: [],
+              cfsMappings: [],
+            });
+            existingCodes.add(code);
+          }
+        }
+        // Массив объектов — пропускаем (обрабатывается rowSections)
+      }
+    };
+
+    // Запускаем только для top-level plain nested objects (не для скаляров верхнего уровня)
+    for (const [key, value] of Object.entries(sourceJsonForFields)) {
+      if (isCustomFieldKey(key)) continue;
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+        fillMissing(value, key);
+      }
+    }
+
+    if (missingFields.length > 0) {
+      // Вторичный AI-вызов для перевода названий gap-filled полей
+      if (languages.length > 1) {
+        try {
+          const fieldNames = [...new Set(missingFields.map(f => f.data.code.split('__').pop()))];
+          const langList = languages.map(lang => `${lang.toUpperCase()} (${LANG_NAMES[lang] || lang})`).join(', ');
+          const titleExamples = languages.map(lang => `"${langToTitleKey(lang)}": "..."`).join(', ');
+          const translationPrompt = `Translate these JSON field names into human-readable titles in the following languages: ${langList}.
+Field names: ${fieldNames.join(', ')}
+Return JSON: {"fieldName": {${titleExamples}}, ...}
+Examples: "postalCode" → {"titleEn": "Postal Code", "titleRu": "Почтовый индекс", "titlePt": "CEP", "titleEs": "Código Postal", "titleTr": "Posta Kodu", "titleFr": "Code Postal", "titleDe": "Postleitzahl"}.
+Use only the languages listed above.`;
+          const translations = await generateJsonFromPrompt(translationPrompt, 'gpt-4o-mini');
+          missingFields.forEach(field => {
+            const key = field.data.code.split('__').pop();
+            const tr = translations[key];
+            if (tr && typeof tr === 'object') {
+              for (const lang of languages) {
+                const titleKey = langToTitleKey(lang);
+                if (tr[titleKey] && typeof tr[titleKey] === 'string') field[titleKey] = tr[titleKey];
+              }
+            }
+          });
+        } catch (_) { /* оставляем авто-заголовки если перевод не удался */ }
+      }
+
+      if (!Array.isArray(result.fields)) result.fields = [];
+      result.fields.push(...missingFields);
+    }
+  }
+
+  // Сортируем result.fields по порядку листьев в sourceJson, чтобы gap-filled поля
+  // не оказывались в конце, а стояли на своём месте (createdDate после customer и т.д.)
+  if (sourceJsonForFields && result.fields && Array.isArray(result.fields)) {
+    const buildLeafPaths = (obj, prefix = '') => {
+      const paths = [];
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return paths;
+      for (const [key, value] of Object.entries(obj)) {
+        if (isCustomFieldKey(key)) continue;
+        const code = prefix ? `${prefix}__${key}` : key;
+        if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+          paths.push(...buildLeafPaths(value, code));
+        } else {
+          paths.push(code);
+        }
+      }
+      return paths;
+    };
+    const orderedPaths = buildLeafPaths(sourceJsonForFields);
+    const pathIndex = new Map(orderedPaths.map((path, i) => [path, i]));
+    result.fields.sort((a, b) => {
+      const idxA = pathIndex.get((a.data?.code || '').replace(/\./g, '__')) ?? Infinity;
+      const idxB = pathIndex.get((b.data?.code || '').replace(/\./g, '__')) ?? Infinity;
+      return idxA - idxB;
     });
   }
 
