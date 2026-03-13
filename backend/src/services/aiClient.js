@@ -46,6 +46,7 @@ export async function generateJsonFromPrompt(prompt, model = 'gpt-4o-mini') {
       ],
       response_format: { type: 'json_object' }, // Гарантирует JSON-выход
       temperature: 0.3, // Низкая температура для более детерминированных результатов
+      max_tokens: 16384, // Максимальный вывод для больших JSON
     });
 
     logAiOperation('Ответ от ИИ получен', { 
@@ -343,8 +344,78 @@ ${sectionFieldTitleLines},
    Пример 3 — вложенные объекты (НЕ массивы!), JSON {"name": "Acme", "buyer": {"firstName": "John", "email": "j@e.com"}, "salesRep": {"firstName": "Jane", "email": "s@e.com"}}:
    ПРАВИЛЬНО: "fields": [{"data": {"code": "name"}}, {"data": {"code": "buyer__firstName"}}, {"data": {"code": "buyer__email"}}, {"data": {"code": "salesRep__firstName"}}, {"data": {"code": "salesRep__email"}}], "rowSections": []
    НЕПРАВИЛЬНО: "fields": [{"data": {"code": "name"}}], "rowSections": [{"data": {"code": "buyer"}, ...}, {"data": {"code": "salesRep"}, ...}]  — buyer и salesRep это объекты, а не массивы, поэтому они НЕ идут в rowSections!
+   Пример 4 — плоские ключи с "__" (уже являются путями, НЕ надо создавать rowSection!), JSON {"id": "123", "status__name": "Open", "status__default": false, "owner__email": "a@b.com"}:
+   ПРАВИЛЬНО: "fields": [{"data": {"code": "id"}}, {"data": {"code": "status__name"}}, {"data": {"code": "status__default"}}, {"data": {"code": "owner__email"}}], "rowSections": []
+   НЕПРАВИЛЬНО: "fields": [{"data": {"code": "id"}}], "rowSections": [{"data": {"code": "status"}, "fields": [...]}, {"data": {"code": "owner"}, "fields": [...]}]  — ключи "status__name", "status__default", "owner__email" уже плоские, они НЕ являются массивами и НЕ идут в rowSections!
 19. **Коды строковых секций и их полей:** Код самой секции должен отражать ПОЛНЫЙ путь к массиву, используя "__" вместо точек (так же как и обычные поля). Например, если JSON содержит {"data": {"contacts": [...]}}, то код секции должен быть "data__contacts". Для полей внутри rowSections используй префикс в виде кода секции: "{код_секции}__{имя_свойства}". Например, "data__contacts__name". КРИТИЧЕСКИ ВАЖНО: НИКОГДА не используй числовые индексы в кодах полей строковых секций. Правильно: "lead_lists__id", "lead_lists__name". НЕПРАВИЛЬНО: "lead_lists__0__id", "lead_lists__0__name". Индексы массива в кодах полей недопустимы.
 20. **Глобальная уникальность кодов:** Все коды во всех массивах (fields[].data.code, rowSections[].data.code, rowSections[].fields[].data.code) должны быть ГЛОБАЛЬНО УНИКАЛЬНЫМИ — никакие два кода не должны совпадать между собой.`;
+}
+
+/** Максимальное кол-во ключей JSON в одном батч-вызове AI */
+const FIELDS_BATCH_SIZE = 40;
+
+/**
+ * Упрощённый промпт для генерации ТОЛЬКО fields[] и rowSections[] (без request).
+ * Используется при батчинге больших JSON.
+ */
+function getFieldsOnlyPrompt(languages) {
+  const fieldTitleLines = languages
+    .map(lang => `      "${langToTitleKey(lang)}": "<название на ${LANG_NAMES[lang] || lang}>"`)
+    .join(',\n');
+  const sectionTitleLines = languages
+    .map(lang => `      "${langToTitleKey(lang)}": "<название секции на ${LANG_NAMES[lang] || lang}>"`)
+    .join(',\n');
+  const sectionFieldTitleLines = languages
+    .map(lang => `          "${langToTitleKey(lang)}": "<название поля на ${LANG_NAMES[lang] || lang}>"`)
+    .join(',\n');
+  const langListStr = languages.map(lang => `${lang.toUpperCase()} (${LANG_NAMES[lang] || lang})`).join(', ');
+
+  return `Проанализируй JSON и сгенерируй объект ТОЛЬКО с "fields" и "rowSections":
+{
+  "fields": [
+    {
+      "id": null,
+      "versionId": null,
+      "data": {
+        "code": "<код через __ вместо точек>",
+        "valueType": <1=строка,2=int,3=decimal,5=datetime,8=date,9=bool,101=string[],102=int[]>,
+        "required": false,
+        "isEditable": true,
+        "dateCreated": "<YYYY-MM-DD HH:mm:ss>"
+      },
+      "enumId": null,
+${fieldTitleLines},
+      "hintEn": null,
+      "hintRu": null
+    }
+  ],
+  "rowSections": [
+    {
+      "id": null, "versionId": null,
+      "data": { "code": "<код>", "customFieldsIsEditable": false, "customFieldsIsRequired": false },
+${sectionTitleLines},
+      "fields": [
+        {
+          "id": null, "versionId": null,
+          "data": { "code": "<секция__поле>", "valueType": 1, "required": false, "isEditable": true, "dateCreated": "<YYYY-MM-DD HH:mm:ss>" },
+          "enumId": null,
+${sectionFieldTitleLines}
+        }
+      ],
+      "customFieldsSetLinks": []
+    }
+  ]
+}
+ПРАВИЛА:
+1. Создай поле в "fields" для КАЖДОГО свойства JSON, включая null (для null → valueType=1).
+2. Коды: если ключ уже содержит __ (например "csr__phone") — используй его КАК ЕСТЬ, не добавляй префиксы. Вложенные объекты разворачивай в плоские коды через __ только если во входном JSON есть реальная вложенность.
+3. СТРОГО: генерируй поля ТОЛЬКО для ключей из входного JSON. Не придумывай и не добавляй поля, которых нет во входном JSON.
+4. Массивы объектов → rowSections. Массивы примитивов → поля типа 101/102 в fields.
+5. Типы: ISO-дата → 5, дата без времени → 8, bool → 9, int → 2, decimal → 3, строка → 1.
+6. Названия полей на ВСЕХ языках: ${langListStr}. Осмысленные переводы.
+7. Игнорируй ключи customFields, custom_fields, cfs, cfsMappings и их вариации.
+8. Все коды должны быть уникальными. Не используй числовые индексы в кодах (lead__0__id → НЕПРАВИЛЬНО).
+9. Возвращай ТОЛЬКО валидный JSON без пояснений.`;
 }
 
 /**
@@ -358,6 +429,32 @@ function isCustomFieldKey(key) {
   return /^(custom_?fields?|cfs_?mappings?|cfs)$/.test(lower)
     || lower.includes('customfield')
     || lower.includes('custom_field');
+}
+
+/**
+ * Рекурсивно "уплощает" вложенный JSON в плоский словарь с ключами через "__".
+ * Используется для корректного подсчёта листовых полей и батч-сплита независимо от уровня вложенности.
+ * Массивы не раскрываются (остаются листом — AI обработает как rowSection).
+ * Пустые объекты {} пропускаются.
+ * @param {Object} obj - Входной JSON объект
+ * @param {string} prefix - Накопленный префикс (через "__")
+ * @returns {Object} - Плоский словарь {code: value}
+ */
+function flattenJsonForBatch(obj, prefix = '') {
+  const result = {};
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return result;
+  for (const [key, value] of Object.entries(obj)) {
+    if (isCustomFieldKey(key)) continue;
+    const code = prefix ? `${prefix}__${key}` : key;
+    if (value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0) {
+      // Непустой объект — уходим глубже
+      Object.assign(result, flattenJsonForBatch(value, code));
+    } else {
+      // Лист: примитив, null, массив или пустой объект
+      result[code] = value;
+    }
+  }
+  return result;
 }
 
 /**
@@ -422,17 +519,69 @@ function findJsonArrayPath(obj, arrayKey, prefix = '') {
 
 
 /**
+ * Сканирует sourceJson и определяет наиболее часто встречающийся формат дат
+ * среди ненулевых значений DateTime/Date. Используется как fallback для полей с null-значением.
+ * @param {Object} sourceJson - Исходный JSON объект
+ * @returns {Object|null} - formatCfg объект или null если даты не найдены
+ */
+function detectCommonDateFormat(sourceJson) {
+  if (!sourceJson || typeof sourceJson !== 'object') return null;
+  const formatCounts = new Map();
+
+  const scan = (obj) => {
+    if (!obj || typeof obj !== 'object') return;
+    for (const value of Object.values(obj)) {
+      if (typeof value === 'string' && value.length >= 10) {
+        let fmt = null, tz = '+0000';
+        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+          fmt = 'Y-m-d\\TH:i:s.v\\Z';
+        } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]/.test(value)) {
+          const m = value.match(/([+-]\d{2}):(\d{2})$/);
+          if (m) tz = m[1] + m[2];
+          fmt = 'Y-m-d\\TH:i:s.vp';
+        } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) {
+          fmt = 'Y-m-d\\TH:i:s\\Z';
+        } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]/.test(value)) {
+          const m = value.match(/([+-]\d{2}):(\d{2})$/);
+          if (m) tz = m[1] + m[2];
+          fmt = 'Y-m-d\\TH:i:sP';
+        } else if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+          fmt = 'Y-m-d H:i:s';
+        }
+        if (fmt) {
+          const existing = formatCounts.get(fmt);
+          if (existing) { existing.count++; }
+          else { formatCounts.set(fmt, { count: 1, cfg: { format: fmt, timezone: tz, valueType: 1 } }); }
+        }
+      } else if (value && typeof value === 'object') {
+        scan(value);
+      }
+    }
+  };
+  scan(sourceJson);
+
+  if (formatCounts.size === 0) return null;
+  let best = null;
+  for (const { count, cfg } of formatCounts.values()) {
+    if (!best || count > best.count) best = { count, cfg };
+  }
+  return best?.cfg || null;
+}
+
+/**
  * Определяет formatCfg для поля на основе типа и значения в исходном JSON.
  * @param {number} valueType - Тип поля
  * @param {string} key - dot-notation путь к значению в JSON
  * @param {any} sourceJson - Исходный JSON объект (или null)
+ * @param {Object|null} [commonDateFormatCfg] - Общий формат дат из JSON (fallback для null-значений)
  * @returns {Object|null} - Объект formatCfg или null
  */
-function detectFormatCfg(valueType, key, sourceJson) {
+function detectFormatCfg(valueType, key, sourceJson, commonDateFormatCfg = null) {
   if (valueType === 5 || valueType === 8) {
     let detectedFormat = null;
     let detectedTimezone = '+0000';
     let detectedValueType = 1;
+    let valueIsNull = true; // признак что у поля нет примера значения
 
     if (sourceJson && key) {
       const keys = key.split('.');
@@ -442,6 +591,7 @@ function detectFormatCfg(valueType, key, sourceJson) {
         else { val = null; break; }
       }
       if (val !== null && val !== undefined) {
+        valueIsNull = false;
         if (typeof val === 'number' && Number.isInteger(val)) {
           detectedValueType = 2;
           if (val >= 1000000000 && val <= 9999999999) detectedFormat = 'U';
@@ -473,6 +623,11 @@ function detectFormatCfg(valueType, key, sourceJson) {
       }
     }
 
+    // Если значение null и нет определённого формата — используем общий формат из JSON
+    if (valueIsNull && !detectedFormat && commonDateFormatCfg) {
+      return commonDateFormatCfg;
+    }
+
     return {
       format: detectedFormat || (valueType === 5 ? 'Y-m-d H:i:s' : 'Y-m-d'),
       timezone: detectedTimezone,
@@ -488,6 +643,54 @@ function detectFormatCfg(valueType, key, sourceJson) {
 }
 
 /**
+ * Преобразует code поля (через __) в ключ запроса (через точки),
+ * учитывая реальную структуру sourceJson.
+ *
+ * Проблема: top-level ключи вида "statusSetBy__active" — это LITERAL ключи JSON,
+ * а не вложенность. Слепая замена __ → . даёт неверный "statusSetBy.active".
+ *
+ * Алгоритм: рекурсивно пробуем пройти путь по sourceJson, предпочитая короткие
+ * сегменты (реальная вложенность), но если сегмент не является объектом —
+ * пробуем объединить его с соседними через __ (literal ключ).
+ *
+ * @param {string} code - код поля, например "statusSetBy__active" или "buyer__firstName"
+ * @param {Object|null} sourceJson - исходный JSON объект
+ * @returns {string} - ключ для request.fields, например "statusSetBy__active" или "buyer.firstName"
+ */
+function codeToRequestKey(code, sourceJson) {
+  if (!sourceJson || typeof sourceJson !== 'object') return code.replace(/__/g, '.');
+
+  // Fast path: если весь code целиком является ключом верхнего уровня —
+  // это литеральный ключ (например "statusSetBy__active"), возвращаем как есть.
+  if (Object.prototype.hasOwnProperty.call(sourceJson, code)) return code;
+
+  const parts = code.split('__');
+
+  // Рекурсивно ищет путь в obj по оставшимся сегментам.
+  // Возвращает строку-ключ если нашли, null если нет.
+  const resolve = (remaining, obj, accumulated) => {
+    if (remaining.length === 0) return accumulated;
+    if (obj === null || obj === undefined || typeof obj !== 'object' || Array.isArray(obj)) return null;
+
+    // Пробуем взять n сегментов как один literal ключ (n=1,2,3,...)
+    for (let n = 1; n <= remaining.length; n++) {
+      const key = remaining.slice(0, n).join('__');
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        const nextAcc = accumulated ? `${accumulated}.${key}` : key;
+        if (n === remaining.length) return nextAcc; // последний сегмент — готово
+        const deeper = resolve(remaining.slice(n), obj[key], nextAcc);
+        if (deeper !== null) return deeper;
+        // Нашли ключ, но не смогли пройти глубже — пробуем следующий n
+      }
+    }
+    return null;
+  };
+
+  const resolved = resolve(parts, sourceJson, '');
+  return resolved !== null ? resolved : code.replace(/__/g, '.');
+}
+
+/**
  * Генерирует целевой JSON (fields и request) на основе источника данных
  * @param {string} sourceType - Тип источника: 'url', 'curl', 'json'
  * @param {string} sourceValue - Содержимое источника
@@ -496,9 +699,10 @@ function detectFormatCfg(valueType, key, sourceJson) {
  */
 export async function generateTargetJson(sourceType, sourceValue, languages = ['en', 'ru']) {
   const instructionPrompt = getInstructionPrompt(languages);
-  
+
   // Формируем промпт на основе типа источника
   let userPrompt = '';
+  let batchedResult = null; // Результат батч-генерации для больших JSON
 
   switch (sourceType) {
     case 'url':
@@ -507,24 +711,93 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
     case 'curl':
       userPrompt = `Curl команда:\n${sourceValue}\n\n${instructionPrompt}`;
       break;
-    case 'json':
+    case 'json': {
       // Оптимизация: для больших JSON создаём упрощённую версию со структурой и примерами
       let optimizedJson = sourceValue;
       try {
         const parsedJson = JSON.parse(sourceValue);
-        // Создаём упрощённую версию: сохраняем структуру, но ограничиваем длину значений
-        optimizedJson = JSON.stringify(createOptimizedJsonStructure(parsedJson), null, 2);
+        // Уплощаем JSON до листовых полей с ключами через "__" для корректного подсчёта.
+        // Это позволяет батчиться даже если все поля вложены в один объект (напр. { data: { ...260 полей... } }).
+        const flatJson = flattenJsonForBatch(parsedJson);
+        const allKeys = Object.keys(flatJson);
+
+        // Батч-генерация для больших JSON (>FIELDS_BATCH_SIZE листовых полей)
+        if (allKeys.length > FIELDS_BATCH_SIZE) {
+          const totalBatches = Math.ceil(allKeys.length / FIELDS_BATCH_SIZE);
+          console.log(`[AI] Большой JSON: ${allKeys.length} листовых полей. Параллельная батч-генерация (${totalBatches} батчей).`);
+
+          // Формируем все батчи сразу из плоского представления
+          const batches = [];
+          for (let i = 0; i < allKeys.length; i += FIELDS_BATCH_SIZE) {
+            const batchIndex = Math.ceil(i / FIELDS_BATCH_SIZE) + 1;
+            const batchKeys = allKeys.slice(i, i + FIELDS_BATCH_SIZE);
+            const batchJson = {};
+            batchKeys.forEach(k => { batchJson[k] = flatJson[k]; });
+            const batchOptimized = JSON.stringify(createOptimizedJsonStructure(batchJson), null, 2);
+            // Разделяем ключи: обычные поля (жёсткое ограничение кодов) vs массивы объектов
+            // (rowSections — подполя генерируются свободно из структуры массива)
+            const arrayOfObjectKeys = batchKeys.filter(k => {
+              const v = flatJson[k];
+              return Array.isArray(v) && v.length > 0 && v[0] !== null && typeof v[0] === 'object';
+            });
+            const regularKeys = batchKeys.filter(k => !arrayOfObjectKeys.includes(k));
+            const allowedCodesLine = regularKeys.length > 0
+              ? `РАЗРЕШЁННЫЕ КОДЫ для полей (используй ТОЛЬКО эти, точно как написано, без изменений): ${regularKeys.join(', ')}`
+              : '';
+            const arrayCodesLine = arrayOfObjectKeys.length > 0
+              ? `МАССИВЫ ОБЪЕКТОВ → rowSections (создай секцию для каждого и сгенерируй подполя из структуры элементов массива): ${arrayOfObjectKeys.join(', ')}`
+              : '';
+            const constraintLines = [allowedCodesLine, arrayCodesLine].filter(Boolean).join('\n');
+            const batchPrompt = `Пример JSON-данных:\n${batchOptimized}\n\n${constraintLines}\n\n${getFieldsOnlyPrompt(languages)}`;
+            batches.push({ batchIndex, batchPrompt });
+          }
+
+          // Запускаем все батчи параллельно
+          const batchResults = await Promise.all(
+            batches.map(({ batchIndex, batchPrompt }) =>
+              generateJsonFromPrompt(batchPrompt)
+                .then(res => {
+                  console.log(`[AI] Батч ${batchIndex}/${totalBatches}: получено ${res.fields?.length || 0} полей`);
+                  return res;
+                })
+                .catch(e => {
+                  console.warn(`[AI] Батч ${batchIndex}/${totalBatches} не удался: ${e.message}`);
+                  return { fields: [], rowSections: [] };
+                })
+            )
+          );
+
+          // Мержим результаты в исходном порядке ключей
+          const allFields = batchResults.flatMap(r => r.fields || []);
+          const allRowSections = batchResults.flatMap(r => r.rowSections || []);
+
+          batchedResult = {
+            fields: allFields,
+            rowSections: allRowSections,
+            request: {
+              data: { url: '', method: 1, format: 0, content: '', urlEncodeType: 0, filter: [], filterType: 2, preScript: '', postScript: '', apiDocUrl: '' },
+              authId: null, certificateId: null, paginationId: null, signatureId: null,
+              fields: [], headers: [],
+              response: { data: { format: 0, pathToArray: null, filter: [], useRequestData: 0, preScript: '', postScript: '' }, fields: [], headers: [], statusHandlers: [], cfsMappings: [] },
+              cfsMappings: [],
+            },
+          };
+        } else {
+          // Создаём упрощённую версию: сохраняем структуру, но ограничиваем длину значений
+          optimizedJson = JSON.stringify(createOptimizedJsonStructure(parsedJson), null, 2);
+          userPrompt = `Пример JSON-данных:\n${optimizedJson}\n\nПроанализируй этот JSON и создай отдельное поле в массиве "fields" для КАЖДОГО свойства JSON.\n\nВАЖНО:\n- В fields[].data.code: используй двойное подчёркивание "__" вместо точек (например, "vars__name" вместо "vars.name")\n- В request.fields[].data.key: используй точки для маппинга (например, "vars.name")\n- В response.fields[].data.key: используй точки для маппинга (например, "result.data.name")\n\nОпредели тип каждого поля на основе его значения.\n\n${instructionPrompt}`;
+        }
       } catch (e) {
         // Если не удалось распарсить, используем оригинал
+        userPrompt = `Пример JSON-данных:\n${sourceValue}\n\nПроанализируй этот JSON и создай отдельное поле в массиве "fields" для КАЖДОГО свойства JSON.\n\nВАЖНО:\n- В fields[].data.code: используй двойное подчёркивание "__" вместо точек (например, "vars__name" вместо "vars.name")\n- В request.fields[].data.key: используй точки для маппинга (например, "vars.name")\n- В response.fields[].data.key: используй точки для маппинга (например, "result.data.name")\n\nОпредели тип каждого поля на основе его значения.\n\n${instructionPrompt}`;
       }
-      
-      userPrompt = `Пример JSON-данных:\n${optimizedJson}\n\nПроанализируй этот JSON и создай отдельное поле в массиве "fields" для КАЖДОГО свойства JSON.\n\nВАЖНО:\n- В fields[].data.code: используй двойное подчёркивание "__" вместо точек (например, "vars__name" вместо "vars.name")\n- В request.fields[].data.key: используй точки для маппинга (например, "vars.name")\n- В response.fields[].data.key: используй точки для маппинга (например, "result.data.name")\n\nОпредели тип каждого поля на основе его значения.\n\n${instructionPrompt}`;
       break;
+    }
     default:
       throw new Error(`Неизвестный тип источника: ${sourceType}`);
   }
 
-  const result = await generateJsonFromPrompt(userPrompt);
+  const result = batchedResult || await generateJsonFromPrompt(userPrompt);
 
   // Логируем сырой ответ AI до постобработки
   console.log('[AI RAW RESPONSE]', JSON.stringify({
@@ -550,6 +823,8 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
 
   // sourceJsonForFields используется в постобработке rowSections — тот же объект
   const sourceJsonForFields = sourceJson;
+  // Плоский словарь всех допустимых кодов (ключи через __) — для быстрой проверки галлюцинаций
+  const sourceJsonFlatKeys = sourceJson ? new Set(Object.keys(flattenJsonForBatch(sourceJson))) : null;
   
   // Постобработка: убираем поля, связанные с кастомными полями
   if (result.fields && Array.isArray(result.fields)) {
@@ -591,6 +866,37 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
     return undefined;
   };
 
+  // Fix 1: Убираем несуществующие и пустые поля.
+  // (а) Поля, которых нет в source JSON вообще — AI-галлюцинации при батчевой генерации.
+  //     Например, AI видит "status__name" и придумывает "status__statusSetBy__name".
+  // (б) Поля для пустых объектов (например "workflowData": {}, "translationData": {}).
+  if (sourceJsonForFields && result.fields && Array.isArray(result.fields)) {
+    result.fields = result.fields.filter(field => {
+      if (!field.data?.code) return true;
+      const code = (field.data.code || '').replace(/\./g, '__');
+      // Сначала проверяем, существует ли код как буквальный ключ верхнего уровня
+      // (например "statusSetBy__name" — это реальный ключ, не вложенный путь)
+      const isLiteralKey = Object.prototype.hasOwnProperty.call(sourceJsonForFields, code);
+      // Проверяем наличие в плоском словаре листовых ключей (быстрая проверка)
+      const isKnownFlatKey = sourceJsonFlatKeys ? sourceJsonFlatKeys.has(code) : true;
+      const value = isLiteralKey
+        ? sourceJsonForFields[code]
+        : resolveWithIntermediates(sourceJsonForFields, code.split('__'));
+      // (а) Путь не существует ни как буквальный ключ, ни как вложенный, ни в плоском словаре — галлюцинация
+      if (!isLiteralKey && !isKnownFlatKey && value === undefined) return false;
+      // (б) Значение — пустой объект {} — маппить нечего, пропускаем
+      if (value !== null && value !== undefined && typeof value === 'object'
+          && !Array.isArray(value) && Object.keys(value).length === 0) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  // Fix 2: Определяем общий формат дат из ненулевых значений в sourceJson.
+  // Используется как fallback для полей с null-значением (например "pendingPurgeDate": null).
+  const commonDateFormatCfg = detectCommonDateFormat(sourceJson);
+
   // Демотирование: если AI ошибочно поместил обычный объект (не массив!) в rowSections,
   // возвращаем его поля обратно в result.fields и удаляем секцию.
   if (sourceJsonForFields && result.rowSections.length > 0) {
@@ -608,12 +914,25 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       const sectionCode = String(section.data.code).replace(/\./g, '__');
       if (section.fields && Array.isArray(section.fields) && section.fields.length > 0) {
         const prefix = sectionCode + '__';
-        const demotedFields = section.fields.map(f => {
-          if (!f?.data?.code) return f;
-          const aiCode = String(f.data.code).replace(/\./g, '__');
-          const normalizedCode = aiCode.startsWith(prefix) ? aiCode : `${sectionCode}__${aiCode}`;
-          return { ...f, data: { ...f.data, code: normalizedCode } };
-        });
+        const demotedFields = section.fields
+          .map(f => {
+            if (!f?.data?.code) return f;
+            const aiCode = String(f.data.code).replace(/\./g, '__');
+            const normalizedCode = aiCode.startsWith(prefix) ? aiCode : `${sectionCode}__${aiCode}`;
+            return { ...f, data: { ...f.data, code: normalizedCode } };
+          })
+          .filter(f => {
+            // Применяем тот же фильтр галлюцинаций что и для result.fields:
+            // если код не существует в sourceJson ни как буквальный ключ, ни как путь — это галлюцинация
+            if (!f?.data?.code || !sourceJsonForFields) return true;
+            const code = f.data.code.replace(/\./g, '__');
+            const isLiteralKey = Object.prototype.hasOwnProperty.call(sourceJsonForFields, code);
+            if (isLiteralKey) return true;
+            const isKnownFlatKey = sourceJsonFlatKeys ? sourceJsonFlatKeys.has(code) : true;
+            if (isKnownFlatKey) return true;
+            const value = resolveWithIntermediates(sourceJsonForFields, code.split('__'));
+            return value !== undefined;
+          });
         result.fields.push(...demotedFields);
       }
       return false; // удаляем секцию из rowSections
@@ -1285,7 +1604,7 @@ Use only the languages listed above.`;
     for (const field of result.fields) {
       const code = field.data?.code;
       if (!code) continue;
-      const key = code.replace(/__/g, '.');
+      const key = codeToRequestKey(code, sourceJson);
       const valueType = field.data?.valueType || 1;
       const isEditable = !!field.data?.isEditable;
 
@@ -1324,7 +1643,7 @@ Use only the languages listed above.`;
     for (const section of result.rowSections) {
       const sectionCode = section.data?.code;
       if (!sectionCode) continue;
-      const arrayKeyPath = sectionCode.replace(/__/g, '.');
+      const arrayKeyPath = codeToRequestKey(sectionCode, sourceJson);
 
       const fieldCodeToKey = (fieldCode) => {
         const prefix = sectionCode + '__';
@@ -1416,7 +1735,7 @@ Use only the languages listed above.`;
         if (!child.data) return child;
         let childValueType = child.data.valueType;
         const childKey = child.data.key;
-        const formatCfg = detectFormatCfg(childValueType, childKey, arrayItemContext || sourceJson);
+        const formatCfg = detectFormatCfg(childValueType, childKey, arrayItemContext || sourceJson, commonDateFormatCfg);
         if (formatCfg) child.data.formatCfg = formatCfg;
         return child;
       });
@@ -1441,7 +1760,7 @@ Use only the languages listed above.`;
       }
     }
 
-    const formatCfg = detectFormatCfg(valueType, key, sourceJson);
+    const formatCfg = detectFormatCfg(valueType, key, sourceJson, commonDateFormatCfg);
     if (formatCfg) requestField.data.formatCfg = formatCfg;
     return requestField;
   });
@@ -1459,7 +1778,7 @@ Use only the languages listed above.`;
       if (!field) return responseField;
       const valueType = field.data?.valueType || 1;
       const key = responseField.data?.key;
-      const formatCfg = detectFormatCfg(valueType, key, sourceJson);
+      const formatCfg = detectFormatCfg(valueType, key, sourceJson, commonDateFormatCfg);
       if (formatCfg) responseField.data.formatCfg = formatCfg;
       return responseField;
     });

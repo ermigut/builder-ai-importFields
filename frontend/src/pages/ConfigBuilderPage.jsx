@@ -13,13 +13,22 @@ import './ConfigBuilderPage.css';
  * Вызывается при каждом изменении fields или rowSections в UI.
  */
 function rebuildRequestFields(fields, rowSections, currentRequest) {
-  // Сохраняем formatCfg существующих полей (key → formatCfg)
+  // Сохраняем formatCfg существующих полей (code → formatCfg)
+  // и правильные ключи (code → key), установленные бэкендом через codeToRequestKey.
+  // Это нужно чтобы не затирать top-level literal-ключи вроде "statusSetBy__active"
+  // слепой заменой __ → . (которая даёт неверный "statusSetBy.active").
   const formatCfgByCode = new Map();
+  const keyByCode = new Map(); // code → правильный key (с учётом literal-ключей)
   // Сохраняем formatCfg дочерних полей row sections (parentKey.childKey → formatCfg)
   const childFormatCfgByPath = new Map();
   (currentRequest?.fields || []).forEach(rf => {
-    if (rf.data?.key && rf.data?.formatCfg) {
-      const code = rf.data.key.replace(/\./g, '__');
+    // Извлекаем code из шаблона value: "{{data.CODE}}" или "{{item.CODE}}"
+    const valueMatch = rf.data?.value?.match(/^\{\{data\.(.+)\}\}$/);
+    const code = valueMatch ? valueMatch[1] : rf.data?.key?.replace(/\./g, '__');
+    if (code && rf.data?.key) {
+      keyByCode.set(code, rf.data.key);
+    }
+    if (code && rf.data?.formatCfg) {
       formatCfgByCode.set(code, rf.data.formatCfg);
     }
     if (rf.data?.valueType === 99) {
@@ -47,7 +56,9 @@ function rebuildRequestFields(fields, rowSections, currentRequest) {
   (fields || []).forEach(field => {
     const code = field.data?.code;
     if (!code) return;
-    const key = code.replace(/__/g, '.');
+    // Используем ключ от бэкенда если есть (codeToRequestKey уже обработал literal-ключи),
+    // иначе fallback на стандартную замену __ → .
+    const key = keyByCode.get(code) ?? code.replace(/__/g, '.');
     const valueType = field.data?.valueType || 1;
     const isEditable = !!field.data?.isEditable;
 
