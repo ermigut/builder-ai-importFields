@@ -257,7 +257,7 @@ ${sectionFieldTitleLines},
 
 ВАЖНО:
 1. **Для JSON-источника:** Проанализируй ВСЕ свойства JSON-объекта и создай ОТДЕЛЬНОЕ поле в массиве "fields" для КАЖДОГО свойства. Например, если JSON содержит {"vars": {"name": "test", "age": 21}}, создай 2 поля.
-2. **КРИТИЧЕСКИ ВАЖНО - Коды полей в fields[].data.code:** В массиве "fields" коды полей НЕ МОГУТ содержать точки! Заменяй точки на двойное подчёркивание "__". Например, для пути "vars.name" код должен быть "vars__name", для "vars.user.age" -> "vars__user__age". Это правило применяется ТОЛЬКО к полю "code" в массиве "fields".
+2. **КРИТИЧЕСКИ ВАЖНО - Коды полей в fields[].data.code:** В массиве "fields" коды полей НЕ МОГУТ содержать точки и пробелы! Заменяй точки на двойное подчёркивание "__", а пробелы на одинарное подчёркивание "_". Например, для пути "vars.name" код должен быть "vars__name", для "vars.user.age" -> "vars__user__age", для ключа "my snippet label" -> "my_snippet_label". Это правило применяется ТОЛЬКО к полю "code" в массиве "fields".
 3. **Ключи в request.fields и response.fields:** В массивах "request.fields" и "response.fields" используй точки в ключах (field.data.key) для маппинга по объекту. Например, для {"vars": {"name": "test"}} создай поле с key="vars.name". Для вложенных объектов используй точечную нотацию (например, "vars.user.name"). Это правило применяется ТОЛЬКО к полю "key" в request.fields и response.fields.
 4. **Значения в request.fields[].data.value:** Для каждого поля в request.fields поле "value" должно содержать шаблон в формате {{data.КОД_ПОЛЯ}}, где КОД_ПОЛЯ - это код соответствующего поля из массива "fields" (без точек, с "__"). Например, если key="vars.name" и соответствующее поле в "fields" имеет code="vars__name", то value должно быть "{{data.vars__name}}".
 5. **formatCfg для полей с типами DateTime (5) и Date (8):** Для полей в request.fields с valueType=5 (DateTime) или valueType=8 (Date) ОБЯЗАТЕЛЬНО добавь объект "formatCfg" в поле "data". Структура formatCfg:
@@ -445,13 +445,18 @@ function flattenJsonForBatch(obj, prefix = '') {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return result;
   for (const [key, value] of Object.entries(obj)) {
     if (isCustomFieldKey(key)) continue;
-    const code = prefix ? `${prefix}__${key}` : key;
+    // Пробелы в ключах заменяем на "_", т.к. Albato не допускает пробелы в кодах полей
+    const sanitizedKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
+    const code = prefix ? `${prefix}__${sanitizedKey}` : sanitizedKey;
     if (value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0) {
       // Непустой объект — уходим глубже
       Object.assign(result, flattenJsonForBatch(value, code));
     } else {
       // Лист: примитив, null, массив или пустой объект
-      result[code] = value;
+      // Если код уже занят (коллизия sanitized-ключа с оригинальным "_"), не перезаписываем
+      if (!(code in result)) {
+        result[code] = value;
+      }
     }
   }
   return result;
@@ -675,12 +680,18 @@ function codeToRequestKey(code, sourceJson) {
     // Пробуем взять n сегментов как один literal ключ (n=1,2,3,...)
     for (let n = 1; n <= remaining.length; n++) {
       const key = remaining.slice(0, n).join('__');
-      if (Object.prototype.hasOwnProperty.call(obj, key)) {
-        const nextAcc = accumulated ? `${accumulated}.${key}` : key;
-        if (n === remaining.length) return nextAcc; // последний сегмент — готово
-        const deeper = resolve(remaining.slice(n), obj[key], nextAcc);
-        if (deeper !== null) return deeper;
-        // Нашли ключ, но не смогли пройти глубже — пробуем следующий n
+      // Пробуем точное совпадение, а также вариант с пробелами вместо "_"
+      // (пробелы в ключах заменяются на "_" при генерации кода в flattenJsonForBatch)
+      const candidates = [key];
+      if (key.includes('_')) candidates.push(key.replace(/_/g, ' '));
+      for (const candidate of candidates) {
+        if (Object.prototype.hasOwnProperty.call(obj, candidate)) {
+          const nextAcc = accumulated ? `${accumulated}.${candidate}` : candidate;
+          if (n === remaining.length) return nextAcc; // последний сегмент — готово
+          const deeper = resolve(remaining.slice(n), obj[candidate], nextAcc);
+          if (deeper !== null) return deeper;
+          // Нашли ключ, но не смогли пройти глубже — пробуем следующий n
+        }
       }
     }
     return null;
@@ -825,7 +836,40 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
   const sourceJsonForFields = sourceJson;
   // Плоский словарь всех допустимых кодов (ключи через __) — для быстрой проверки галлюцинаций
   const sourceJsonFlatKeys = sourceJson ? new Set(Object.keys(flattenJsonForBatch(sourceJson))) : null;
-  
+
+  // Постобработка: нормализация кодов — пробелы → "_" (Albato не допускает пробелы в кодах)
+  // и дедупликация (AI может сгенерировать и "my snippet label", и "my_snippet_label")
+  const sanitizeFieldCode = (code) => code ? code.replace(/ /g, '_') : code;
+  if (result.fields && Array.isArray(result.fields)) {
+    const seenCodes = new Set();
+    result.fields.forEach(field => {
+      if (field.data?.code) field.data.code = sanitizeFieldCode(field.data.code);
+    });
+    result.fields = result.fields.filter(field => {
+      const code = field.data?.code;
+      if (!code) return true;
+      if (seenCodes.has(code)) return false;
+      seenCodes.add(code);
+      return true;
+    });
+  }
+  if (result.rowSections && Array.isArray(result.rowSections)) {
+    result.rowSections.forEach(section => {
+      if (section.data?.code) section.data.code = sanitizeFieldCode(section.data.code);
+      const seenChildCodes = new Set();
+      (section.fields || []).forEach(field => {
+        if (field.data?.code) field.data.code = sanitizeFieldCode(field.data.code);
+      });
+      section.fields = (section.fields || []).filter(field => {
+        const code = field.data?.code;
+        if (!code) return true;
+        if (seenChildCodes.has(code)) return false;
+        seenChildCodes.add(code);
+        return true;
+      });
+    });
+  }
+
   // Постобработка: убираем поля, связанные с кастомными полями
   if (result.fields && Array.isArray(result.fields)) {
     result.fields = result.fields.filter(field => {
@@ -947,7 +991,8 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return paths;
       for (const [key, value] of Object.entries(obj)) {
         if (isCustomFieldKey(key)) continue;
-        const path = prefix ? `${prefix}__${key}` : key;
+        const sanitizedKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
+        const path = prefix ? `${prefix}__${sanitizedKey}` : sanitizedKey;
         if (Array.isArray(value) && value.length > 0 && value[0] !== null && typeof value[0] === 'object') {
           paths.push(path);
         } else if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -1155,7 +1200,8 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
       for (const [key, value] of Object.entries(obj)) {
         if (isCustomFieldKey(key)) continue;
-        const code = prefix ? `${prefix}__${key}` : key;
+        const sanitizedKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
+        const code = prefix ? `${prefix}__${sanitizedKey}` : sanitizedKey;
         if (Array.isArray(value) && value.length > 0 && value[0] !== null && typeof value[0] === 'object') {
           if (!existingSectionCodes.has(code) && !normalizedSectionCodes.has(normCode(code)) && !collapsedSectionCodes.has(collapseCode(code))) {
             missingSections.push({ code, firstItem: value[0] });
@@ -1213,7 +1259,8 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
         const recurse = (obj, prefix) => {
           for (const [k, v] of Object.entries(obj)) {
             if (isCustomFieldKey(k)) continue;
-            const fieldCode = `${prefix}__${k}`;
+            const sanitizedK = k.includes(' ') ? k.replace(/ /g, '_') : k;
+            const fieldCode = `${prefix}__${sanitizedK}`;
             if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
               recurse(v, fieldCode);
             } else if (!Array.isArray(v) || v.length === 0 || typeof v[0] !== 'object') {
@@ -1369,7 +1416,9 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
       for (const [key, value] of Object.entries(obj)) {
         if (isCustomFieldKey(key)) continue;
-        const code = `${prefix}__${key}`;
+        // Пробелы → "_" для совместимости с Albato (как в flattenJsonForBatch)
+        const sanitizedKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
+        const code = `${prefix}__${sanitizedKey}`;
         if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
           // Вложенный plain объект — если AI ошибочно создал плоское поле для этого пути, удаляем
           const normC = normalizeCode(code);
@@ -1431,8 +1480,9 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
     // Запускаем только для top-level plain nested objects (не для скаляров верхнего уровня)
     for (const [key, value] of Object.entries(sourceJsonForFields)) {
       if (isCustomFieldKey(key)) continue;
+      const sanitizedTopKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
       if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-        fillMissing(value, key);
+        fillMissing(value, sanitizedTopKey);
       }
     }
 
@@ -1485,7 +1535,8 @@ Use only the languages listed above.`;
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return paths;
       for (const [key, value] of Object.entries(obj)) {
         if (isCustomFieldKey(key)) continue;
-        const code = prefix ? `${prefix}__${key}` : key;
+        const sanitizedKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
+        const code = prefix ? `${prefix}__${sanitizedKey}` : sanitizedKey;
         if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
           paths.push(...buildLeafPaths(value, code));
         } else {
@@ -1645,9 +1696,25 @@ Use only the languages listed above.`;
       if (!sectionCode) continue;
       const arrayKeyPath = codeToRequestKey(sectionCode, sourceJson);
 
+      // Для дочерних полей rowSection получаем элемент массива из sourceJson,
+      // чтобы codeToRequestKey мог корректно восстановить ключи с пробелами
+      let sectionArrayItem = null;
+      if (sourceJson) {
+        const resolvedArrayKey = codeToRequestKey(sectionCode, sourceJson);
+        // Пробуем получить массив по точечному пути
+        const arrValue = resolvedArrayKey.split('.').reduce((o, k) => o?.[k], sourceJson);
+        if (Array.isArray(arrValue) && arrValue.length > 0 && typeof arrValue[0] === 'object') {
+          sectionArrayItem = arrValue[0];
+        }
+      }
+
       const fieldCodeToKey = (fieldCode) => {
         const prefix = sectionCode + '__';
         const stripped = fieldCode.startsWith(prefix) ? fieldCode.slice(prefix.length) : fieldCode;
+        // Используем codeToRequestKey с элементом массива для корректного восстановления ключей с пробелами
+        if (sectionArrayItem) {
+          return codeToRequestKey(stripped, sectionArrayItem);
+        }
         return stripped.replace(/__/g, '.');
       };
 

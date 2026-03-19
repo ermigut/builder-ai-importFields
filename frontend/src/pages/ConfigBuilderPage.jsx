@@ -19,8 +19,9 @@ function rebuildRequestFields(fields, rowSections, currentRequest) {
   // слепой заменой __ → . (которая даёт неверный "statusSetBy.active").
   const formatCfgByCode = new Map();
   const keyByCode = new Map(); // code → правильный key (с учётом literal-ключей)
-  // Сохраняем formatCfg дочерних полей row sections (parentKey.childKey → formatCfg)
-  const childFormatCfgByPath = new Map();
+  // Сохраняем formatCfg и ключи дочерних полей row sections
+  const childFormatCfgByPath = new Map(); // parentKey.childKey → formatCfg
+  const childKeyByCode = new Map(); // childCode (из {{item.CODE}}) → правильный key
   (currentRequest?.fields || []).forEach(rf => {
     // Извлекаем code из шаблона value: "{{data.CODE}}" или "{{item.CODE}}"
     const valueMatch = rf.data?.value?.match(/^\{\{data\.(.+)\}\}$/);
@@ -36,6 +37,12 @@ function rebuildRequestFields(fields, rowSections, currentRequest) {
       (rf.children || []).forEach(child => {
         if (child.data?.key && child.data?.formatCfg) {
           childFormatCfgByPath.set(`${parentKey}.${child.data.key}`, child.data.formatCfg);
+        }
+        // Сохраняем ключ дочернего поля по коду из шаблона {{item.CODE}}
+        const childValueMatch = child.data?.value?.match(/^\{\{item\.(.+)\}\}$/);
+        const childCode = childValueMatch ? childValueMatch[1] : null;
+        if (childCode && child.data?.key) {
+          childKeyByCode.set(childCode, child.data.key);
         }
       });
     }
@@ -90,9 +97,11 @@ function rebuildRequestFields(fields, rowSections, currentRequest) {
   (rowSections || []).forEach(section => {
     const sectionCode = section.data?.code;
     if (!sectionCode) return;
-    const arrayKeyPath = sectionCode.replace(/__/g, '.');
+    const arrayKeyPath = keyByCode.get(sectionCode) ?? sectionCode.replace(/__/g, '.');
 
     const fieldCodeToKey = (fieldCode) => {
+      // Используем ключ от бэкенда если есть (codeToRequestKey корректно восстановил пробелы)
+      if (childKeyByCode.has(fieldCode)) return childKeyByCode.get(fieldCode);
       const prefix = sectionCode + '__';
       const stripped = fieldCode.startsWith(prefix) ? fieldCode.slice(prefix.length) : fieldCode;
       return stripped.replace(/__/g, '.');
@@ -529,14 +538,17 @@ function ConfigBuilderPage() {
         setSendResult({
           success: false,
           message: response.data.message || response.data.error || 'Ошибка при отправке',
+          errors: response.data.data?.errors || [],
         });
       }
     } catch (error) {
       console.error('Ошибка при отправке в Albato:', error);
       const errorMessage = error.response?.data?.error || error.response?.data?.message || 'Ошибка при отправке в Albato. Попробуйте позже.';
+      const errorDetails = error.response?.data?.data?.errors || [];
       setSendResult({
         success: false,
         message: errorMessage,
+        errors: errorDetails,
       });
     } finally {
       setIsSending(false);
@@ -865,6 +877,29 @@ function ConfigBuilderPage() {
               {sendResult && (
                 <div className={`send-result ${sendResult.success ? 'success' : 'error'}`}>
                   <strong>{sendResult.success ? '✓ Успех:' : '✗ Ошибка:'}</strong> {sendResult.message}
+                  {sendResult.errors && sendResult.errors.length > 0 && (
+                    <ul className="send-error-details">
+                      {sendResult.errors.map((err, idx) => {
+                        let fieldLabel = err.field;
+                        // Парсим путь вида "fields.29.data.code" для получения названия поля
+                        const match = err.field?.match(/^fields\.(\d+)\./);
+                        if (match && generatedData?.fields) {
+                          const fieldIndex = parseInt(match[1], 10);
+                          const field = generatedData.fields[fieldIndex];
+                          if (field) {
+                            const title = field.titleRu || field.titleEn || err.field;
+                            const code = field.data?.code;
+                            fieldLabel = code ? `${title} (${code})` : title;
+                          }
+                        }
+                        return (
+                          <li key={idx}>
+                            <strong>Поле {fieldLabel}:</strong> {err.message}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
                 </div>
               )}
             </div>
