@@ -1623,6 +1623,59 @@ Use only the languages listed above.`;
     }
   }
 
+  // Финальный перевод rowSections: проверяем ВСЕ секции и их поля на отсутствие переводов.
+  // Ловит случаи авто-промоушена, gap-filling и пропусков AI.
+  if (languages.length > 1 && result.rowSections && Array.isArray(result.rowSections) && result.rowSections.length > 0) {
+    const enLangKey = langToTitleKey(languages.includes('en') ? 'en' : languages[0]);
+    const nonEnLangs = languages.filter(l => l !== (languages.includes('en') ? 'en' : languages[0]));
+
+    // Собираем объекты (секции и поля) с отсутствующими переводами
+    const titleMapForTranslation = new Map(); // enTitle → [objects]
+    const checkAndRegister = (obj) => {
+      const enTitle = obj[enLangKey];
+      if (!enTitle) return;
+      // Проверяем: есть ли хоть один не-en язык, где перевод отсутствует или совпадает с английским
+      const needsTranslation = nonEnLangs.some(lang => {
+        const tk = langToTitleKey(lang);
+        return !obj[tk] || obj[tk] === enTitle;
+      });
+      if (needsTranslation) {
+        if (!titleMapForTranslation.has(enTitle)) titleMapForTranslation.set(enTitle, []);
+        titleMapForTranslation.get(enTitle).push(obj);
+      }
+    };
+
+    result.rowSections.forEach(section => {
+      checkAndRegister(section);
+      if (section.fields && Array.isArray(section.fields)) {
+        section.fields.forEach(f => checkAndRegister(f));
+      }
+    });
+
+    if (titleMapForTranslation.size > 0) {
+      try {
+        const uniqueTitles = [...titleMapForTranslation.keys()];
+        const langList = languages.map(l => `${l.toUpperCase()} (${LANG_NAMES[l] || l})`).join(', ');
+        const titleExamples = languages.map(l => `"${langToTitleKey(l)}": "..."`).join(', ');
+        const translationResult = await generateJsonFromPrompt(
+          `Translate these field/section titles into: ${langList}.\nTitles: ${uniqueTitles.join(', ')}\nReturn JSON: {"<exact title>": {${titleExamples}}, ...}\nExamples: "Items" → {"titleEn": "Items", "titleRu": "Позиции"}, "Birthdate Month" → {"titleEn": "Birthdate Month", "titleRu": "Месяц дня рождения"}, "Work Experience" → {"titleEn": "Work Experience", "titleRu": "Опыт работы"}.\nUse only languages listed above.`,
+          'gpt-4o-mini'
+        );
+        titleMapForTranslation.forEach((objs, title) => {
+          const tr = translationResult[title];
+          if (tr && typeof tr === 'object') {
+            objs.forEach(obj => {
+              for (const lang of languages) {
+                const tk = langToTitleKey(lang);
+                if (tr[tk] && typeof tr[tk] === 'string') obj[tk] = tr[tk];
+              }
+            });
+          }
+        });
+      } catch (_) { /* оставляем как есть если перевод не удался */ }
+    }
+  }
+
   // Для JSON и curl: все поля по умолчанию редактируемые (isEditable = true)
   if (sourceType === 'json' || sourceType === 'curl') {
     if (result.fields && Array.isArray(result.fields)) {
