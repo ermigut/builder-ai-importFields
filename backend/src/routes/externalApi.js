@@ -1,13 +1,12 @@
 import express from 'express';
 import axios from 'axios';
-import { authMiddleware } from '../middleware/authMiddleware.js';
 import { sendToAlbato } from '../services/externalApiClient.js';
 import { validateTargetJson } from '../services/jsonSchemaValidator.js';
 
 const router = express.Router();
 
 // POST /albato/auth - авторизация в Albato для получения JWT токена
-router.post('/auth', authMiddleware, async (req, res) => {
+router.post('/auth', async (req, res) => {
   try {
     const { domainZone, email, password } = req.body;
 
@@ -81,7 +80,7 @@ router.post('/auth', authMiddleware, async (req, res) => {
 });
 
 // GET /albato/apps - получение списка приложений из Albato
-router.get('/apps', authMiddleware, async (req, res) => {
+router.get('/apps', async (req, res) => {
   try {
     const { domainZone, albatoToken } = req.query;
 
@@ -146,7 +145,7 @@ router.get('/apps', authMiddleware, async (req, res) => {
 });
 
 // GET /albato/apps/:appId/versions - получение последней редактируемой версии приложения
-router.get('/apps/:appId/versions', authMiddleware, async (req, res) => {
+router.get('/apps/:appId/versions', async (req, res) => {
   try {
     const { domainZone, albatoToken } = req.query;
     const { appId } = req.params;
@@ -228,7 +227,7 @@ router.get('/apps/:appId/versions', authMiddleware, async (req, res) => {
 });
 
 // GET /albato/apps/:appId/versions/:versionId/entities - получение списка сущностей (actions/triggers)
-router.get('/apps/:appId/versions/:versionId/entities', authMiddleware, async (req, res) => {
+router.get('/apps/:appId/versions/:versionId/entities', async (req, res) => {
   try {
     const { domainZone, albatoToken, entityType } = req.query;
     const { appId, versionId } = req.params;
@@ -307,7 +306,7 @@ router.get('/apps/:appId/versions/:versionId/entities', authMiddleware, async (r
 });
 
 // POST /albato/send - защищённый маршрут для отправки данных в Albato
-router.post('/send', authMiddleware, async (req, res) => {
+router.post('/send', async (req, res) => {
   try {
     const { domainZone, albatoToken, appId, versionId, entityType, entityId, behaviourType, responseId, fields, request, rowSections } = req.body;
 

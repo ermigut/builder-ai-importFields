@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import axios from 'axios';
 import SourceInputSwitcher from '../components/SourceInputSwitcher';
 import FieldsTable from '../components/FieldsTable';
 import RequestConfigEditor from '../components/RequestConfigEditor';
@@ -176,11 +176,6 @@ function rebuildRequestFields(fields, rowSections, currentRequest) {
 }
 
 function ConfigBuilderPage() {
-  const navigate = useNavigate();
-  const [user] = useState(() => {
-    const storedUser = localStorage.getItem('user');
-    return storedUser ? JSON.parse(storedUser) : null;
-  });
   // Авторизация Albato
   const [domainZone, setDomainZone] = useState(() => localStorage.getItem('albato_domainZone') || '.ru');
   const [authMethod, setAuthMethod] = useState(() => localStorage.getItem('albato_authMethod') || 'credentials');
@@ -217,6 +212,7 @@ function ConfigBuilderPage() {
 
   const [sourceData, setSourceData] = useState({ type: '', value: '' });
   const [isGenerating, setIsGenerating] = useState(false);
+  const abortControllerRef = useRef(null);
   const [generatedData, setGeneratedData] = useState(null); // { fields: [], request: {} }
   const [isSending, setIsSending] = useState(false);
   const [sendResult, setSendResult] = useState(null); // { success: boolean, message: string }
@@ -346,12 +342,6 @@ function ConfigBuilderPage() {
     }
   }, [albatoToken, appId, versionId, entityType, domainZone]);
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    navigate('/login');
-  };
-
   const handleSourceChange = (data) => {
     setSourceData(data);
   };
@@ -403,6 +393,8 @@ function ConfigBuilderPage() {
     }
 
     setIsGenerating(true);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     try {
       // Формат запроса: { sourceType: 'url' | 'curl' | 'json', sourceValue: string }
       const requestData = {
@@ -411,7 +403,7 @@ function ConfigBuilderPage() {
         languages: versionLanguages,
       };
 
-      const response = await api.post('/ai/generate', requestData);
+      const response = await api.post('/ai/generate', requestData, { signal: controller.signal });
       
       // Логируем ответ для отладки
       console.log('Response from AI:', response.data);
@@ -459,11 +451,22 @@ function ConfigBuilderPage() {
       }
       
     } catch (error) {
-      console.error('Ошибка при генерации:', error);
-      const errorMessage = error.response?.data?.error || 'Ошибка при генерации конфигурации. Попробуйте позже.';
-      alert(errorMessage);
+      if (axios.isCancel(error) || error.name === 'CanceledError') {
+        console.log('Генерация отменена пользователем');
+      } else {
+        console.error('Ошибка при генерации:', error);
+        const errorMessage = error.response?.data?.error || 'Ошибка при генерации конфигурации. Попробуйте позже.';
+        alert(errorMessage);
+      }
     } finally {
+      abortControllerRef.current = null;
       setIsGenerating(false);
+    }
+  };
+
+  const handleCancelGenerate = () => {
+    if (window.confirm('Точно отменить генерацию?')) {
+      abortControllerRef.current?.abort();
     }
   };
 
@@ -558,13 +561,7 @@ function ConfigBuilderPage() {
   return (
     <div className="config-builder-page">
       <header className="header">
-        <h1>Конфигуратор API</h1>
-        <div className="user-info">
-          <span>Пользователь: {user?.username}</span>
-          <button onClick={handleLogout} className="logout-button">
-            Выйти
-          </button>
-        </div>
+        <h1>AI импорт запросов в <span className="albato-brand">Albato</span> Builder</h1>
       </header>
       <main className="main-content">
         {/* Авторизация в Albato */}
@@ -810,6 +807,14 @@ function ConfigBuilderPage() {
             >
               {isGenerating ? 'Генерация...' : 'Сгенерировать'}
             </button>
+            {isGenerating && (
+              <button
+                onClick={handleCancelGenerate}
+                className="cancel-button"
+              >
+                Отменить
+              </button>
+            )}
             {generatedData && (
               <button
                 onClick={() => setGeneratedData(null)}

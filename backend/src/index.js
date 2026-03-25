@@ -3,7 +3,6 @@ import './config.js';
 
 import express from 'express';
 import cors from 'cors';
-import authRouter from './routes/auth.js';
 import aiGenerateRouter from './routes/aiGenerate.js';
 import albatoApiRouter from './routes/externalApi.js';
 import { requestLogger } from './middleware/logger.js';
@@ -24,13 +23,10 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// Auth routes
-app.use('/auth', authRouter);
-
-// AI Generate routes (защищённые маршруты)
+// AI Generate routes
 app.use('/ai', aiGenerateRouter);
 
-// Albato API routes (защищённые маршруты)
+// Albato API routes
 app.use('/albato', albatoApiRouter);
 
 // Обработка 404

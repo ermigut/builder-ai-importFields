@@ -24,7 +24,7 @@ const openai = OPENAI_API_KEY
  * @returns {Promise<Object>} - Парсированный JSON-объект
  * @throws {Error} - Если произошла ошибка при обращении к ИИ или парсинге JSON
  */
-export async function generateJsonFromPrompt(prompt, model = 'gpt-4o-mini') {
+export async function generateJsonFromPrompt(prompt, model = 'gpt-4o-mini', { signal } = {}) {
   if (!openai) {
     throw new Error('OpenAI API ключ не настроен. Установите переменную окружения OPENAI_API_KEY.');
   }
@@ -47,7 +47,7 @@ export async function generateJsonFromPrompt(prompt, model = 'gpt-4o-mini') {
       response_format: { type: 'json_object' }, // Гарантирует JSON-выход
       temperature: 0.3, // Низкая температура для более детерминированных результатов
       max_tokens: 16384, // Максимальный вывод для больших JSON
-    });
+    }, { signal });
 
     logAiOperation('Ответ от ИИ получен', { 
       model, 
@@ -708,7 +708,7 @@ function codeToRequestKey(code, sourceJson) {
  * @param {string[]} languages - Список кодов языков для генерации названий полей
  * @returns {Promise<Object>} - Объект с полями fields и request
  */
-export async function generateTargetJson(sourceType, sourceValue, languages = ['en', 'ru']) {
+export async function generateTargetJson(sourceType, sourceValue, languages = ['en', 'ru'], { signal } = {}) {
   const instructionPrompt = getInstructionPrompt(languages);
 
   // Формируем промпт на основе типа источника
@@ -766,7 +766,7 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
           // Запускаем все батчи параллельно
           const batchResults = await Promise.all(
             batches.map(({ batchIndex, batchPrompt }) =>
-              generateJsonFromPrompt(batchPrompt)
+              generateJsonFromPrompt(batchPrompt, 'gpt-4o-mini', { signal })
                 .then(res => {
                   console.log(`[AI] Батч ${batchIndex}/${totalBatches}: получено ${res.fields?.length || 0} полей`);
                   return res;
@@ -808,7 +808,7 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       throw new Error(`Неизвестный тип источника: ${sourceType}`);
   }
 
-  const result = batchedResult || await generateJsonFromPrompt(userPrompt);
+  const result = batchedResult || await generateJsonFromPrompt(userPrompt, 'gpt-4o-mini', { signal });
 
   // Логируем сырой ответ AI до постобработки
   console.log('[AI RAW RESPONSE]', JSON.stringify({

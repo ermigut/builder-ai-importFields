@@ -1,12 +1,18 @@
 import express from 'express';
-import { authMiddleware } from '../middleware/authMiddleware.js';
 import { generateTargetJson } from '../services/aiClient.js';
 import { validateTargetJson, normalizeTargetJson } from '../services/jsonSchemaValidator.js';
 
 const router = express.Router();
 
-// POST /ai/generate - защищённый маршрут, требует аутентификации
-router.post('/generate', authMiddleware, async (req, res) => {
+// POST /ai/generate
+router.post('/generate', async (req, res) => {
+  const abortController = new AbortController();
+  res.on('close', () => {
+    if (!res.writableFinished) {
+      abortController.abort();
+    }
+  });
+
   try {
     const { sourceType, sourceValue, languages } = req.body;
 
@@ -32,7 +38,7 @@ router.post('/generate', authMiddleware, async (req, res) => {
     // Генерация целевого JSON через ИИ
     try {
       const langs = Array.isArray(languages) && languages.length > 0 ? languages : ['en', 'ru'];
-      const result = await generateTargetJson(sourceType, sourceValue.trim(), langs);
+      const result = await generateTargetJson(sourceType, sourceValue.trim(), langs, { signal: abortController.signal });
       
       // Логируем результат для отладки
       console.log('AI generated result:', JSON.stringify(result, null, 2));
