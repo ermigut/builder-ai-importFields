@@ -12,7 +12,7 @@ const langToTitleKey = (lang) => 'title' + lang.charAt(0).toUpperCase() + lang.s
  * @param {Function} props.onRowSectionsChange
  * @param {string[]} props.languages - Список кодов языков
  */
-function RowSectionsTable({ rowSections = [], onRowSectionsChange, languages = ['en', 'ru'] }) {
+function RowSectionsTable({ rowSections = [], onRowSectionsChange, languages = ['en', 'ru'], showIsInArrayElement = false }) {
   const [expandedIndexes, setExpandedIndexes] = useState(() => {
     return new Set(rowSections.map((_, i) => i));
   });
@@ -120,6 +120,19 @@ function RowSectionsTable({ rowSections = [], onRowSectionsChange, languages = [
                         </label>
                       );
                     })}
+                    {showIsInArrayElement && (
+                      <label className="section-in-array-label">
+                        <input
+                          type="checkbox"
+                          checked={!!editedSection.data?.isInArrayElement}
+                          onChange={(e) => setEditedSection(prev => ({
+                            ...prev,
+                            data: { ...prev.data, isInArrayElement: e.target.checked },
+                          }))}
+                        />
+                        В массиве
+                      </label>
+                    )}
                     <div className="section-header-actions">
                       <button onClick={() => handleSave(index)} className="save-btn">Сохранить</button>
                       <button onClick={handleCancel} className="cancel-btn">Отмена</button>
@@ -136,6 +149,20 @@ function RowSectionsTable({ rowSections = [], onRowSectionsChange, languages = [
                         : null;
                     })}
                     <span className="section-fields-count">({fieldsCount} полей)</span>
+                    {showIsInArrayElement && (
+                      <label className="section-in-array-label">
+                        <input
+                          type="checkbox"
+                          checked={!!section.data?.isInArrayElement}
+                          onChange={(e) => {
+                            const updated = [...safeSections];
+                            updated[index] = { ...section, data: { ...section.data, isInArrayElement: e.target.checked } };
+                            onRowSectionsChange(updated);
+                          }}
+                        />
+                        В массиве
+                      </label>
+                    )}
                   </div>
                 )}
 

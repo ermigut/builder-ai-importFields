@@ -14,7 +14,7 @@ router.post('/generate', async (req, res) => {
   });
 
   try {
-    const { sourceType, sourceValue, languages } = req.body;
+    const { sourceType, sourceValue, languages, considerArrayPath } = req.body;
 
     // Валидация входных данных
     if (!sourceType || !sourceValue) {
@@ -38,7 +38,7 @@ router.post('/generate', async (req, res) => {
     // Генерация целевого JSON через ИИ
     try {
       const langs = Array.isArray(languages) && languages.length > 0 ? languages : ['en', 'ru'];
-      const result = await generateTargetJson(sourceType, sourceValue.trim(), langs, { signal: abortController.signal });
+      const result = await generateTargetJson(sourceType, sourceValue.trim(), langs, { signal: abortController.signal, considerArrayPath: !!considerArrayPath });
       
       // Логируем результат для отладки
       console.log('AI generated result:', JSON.stringify(result, null, 2));
@@ -72,6 +72,7 @@ router.post('/generate', async (req, res) => {
           fields: normalized.fields || [],
           rowSections: result.rowSections || [],
           request: normalized.request || {},
+          pathToArray: result.pathToArray ?? null,
         });
       }
 
@@ -81,6 +82,7 @@ router.post('/generate', async (req, res) => {
         fields: result.fields || [],
         rowSections: result.rowSections || [],
         request: result.request || {},
+        pathToArray: result.pathToArray ?? null,
       });
     } catch (aiError) {
       // Обработка ошибок от ИИ

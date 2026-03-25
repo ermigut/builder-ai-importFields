@@ -19,7 +19,7 @@ const NEW_FIELD_TEMPLATE = {
   hintRu: null,
 };
 
-function FieldsTable({ fields = [], onFieldsChange, languages = ['en', 'ru'] }) {
+function FieldsTable({ fields = [], onFieldsChange, languages = ['en', 'ru'], showIsInArrayElement = false }) {
   const [editingIndex, setEditingIndex] = useState(null);
   const [editedField, setEditedField] = useState(null);
   const [isAdding, setIsAdding] = useState(false);
@@ -96,7 +96,7 @@ function FieldsTable({ fields = [], onFieldsChange, languages = ['en', 'ru'] }) 
   };
 
   const handleToggleAll = (dataKey) => {
-    const label = dataKey === 'required' ? 'обязательными' : 'редактируемыми';
+    const label = dataKey === 'required' ? 'обязательными' : dataKey === 'isEditable' ? 'редактируемыми' : 'в массиве';
     const choice = window.confirm(
       `Сделать все поля ${label}?\n\nОК — установить у всех\nОтмена — снять у всех`
     );
@@ -152,6 +152,14 @@ function FieldsTable({ fields = [], onFieldsChange, languages = ['en', 'ru'] }) 
                 Сменить у всех
               </button>
             </th>
+            {showIsInArrayElement && (
+              <th>
+                В массиве
+                <button className="toggle-all-btn" onClick={() => handleToggleAll('isInArrayElement')} title="Сменить у всех полей">
+                  Сменить у всех
+                </button>
+              </th>
+            )}
             {languages.map(lang => (
               <th key={lang} className="lang-col" title={`Название (${lang.toUpperCase()})`}>{lang.toUpperCase()}</th>
             ))}
@@ -206,6 +214,16 @@ function FieldsTable({ fields = [], onFieldsChange, languages = ['en', 'ru'] }) 
                       className="field-checkbox"
                     />
                   </td>
+                  {showIsInArrayElement && (
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={editedField.data.isInArrayElement || false}
+                        onChange={(e) => handleFieldChange(editedField, 'data.isInArrayElement', e.target.checked)}
+                        className="field-checkbox"
+                      />
+                    </td>
+                  )}
                   {languages.map(lang => {
                     const key = langToTitleKey(lang);
                     return (
@@ -232,6 +250,9 @@ function FieldsTable({ fields = [], onFieldsChange, languages = ['en', 'ru'] }) 
                   <td>{field?.data?.valueType ? getTypeName(field.data.valueType) : '-'}</td>
                   <td>{field?.data?.required ? <span className="mark-yes">✓</span> : <span className="mark-no">✗</span>}</td>
                   <td>{field?.data?.isEditable ? <span className="mark-yes">✓</span> : <span className="mark-no">✗</span>}</td>
+                  {showIsInArrayElement && (
+                    <td>{field?.data?.isInArrayElement ? <span className="mark-yes">✓</span> : <span className="mark-no">✗</span>}</td>
+                  )}
                   {languages.map(lang => {
                     const key = langToTitleKey(lang);
                     return <td key={lang} className="lang-col">{field?.[key] ?? '-'}</td>;
@@ -291,6 +312,16 @@ function FieldsTable({ fields = [], onFieldsChange, languages = ['en', 'ru'] }) 
                   className="field-checkbox"
                 />
               </td>
+              {showIsInArrayElement && (
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={newField.data.isInArrayElement || false}
+                    onChange={(e) => handleNewFieldChange('data.isInArrayElement', e.target.checked)}
+                    className="field-checkbox"
+                  />
+                </td>
+              )}
               {languages.map(lang => {
                 const key = langToTitleKey(lang);
                 return (

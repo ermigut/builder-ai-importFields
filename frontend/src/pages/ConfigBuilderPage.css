@@ -475,3 +475,113 @@
 .send-error-details li {
   margin-bottom: 0.25rem;
 }
+
+/* Галочка "Учитывать путь к массиву" */
+.array-path-option {
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  color: #213547;
+}
+
+.array-path-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.array-path-checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.array-path-hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  color: #6c757d;
+  margin-left: 1.5rem;
+}
+
+
+/* Редактор "Путь к массиву данных" */
+.path-to-array-editor {
+  background: #e8f4fd;
+  border: 1px solid #b8daff;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  color: #213547;
+}
+
+.path-to-array-editor label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.path-to-array-input-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.path-to-array-input {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #b8daff;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.9rem;
+}
+
+.root-tag {
+  background: #17a2b8;
+  color: white;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.path-to-array-remove-btn {
+  background: #dc3545;
+  color: white;
+  border: none;
+  padding: 0.35rem 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.path-to-array-remove-btn:hover {
+  background: #c82333;
+}
+
+.path-to-array-add-btn {
+  background: #28a745;
+  color: white;
+  border: none;
+  padding: 0.35rem 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.path-to-array-add-btn:hover {
+  background: #218838;
+}
+
+.path-to-array-empty {
+  color: #6c757d;
+  font-style: italic;
+  font-size: 0.9rem;
+}

@@ -498,6 +498,39 @@ function createOptimizedJsonStructure(obj, maxStringLength = 100, depth = 0) {
 }
 
 /**
+ * Ищет верхнеуровневый массив объектов в JSON (BFS по глубине).
+ * Берёт первый найденный на самом мелком уровне.
+ * @param {any} obj - JSON объект
+ * @returns {{ path: string, element: Object } | null} - Путь (dot-notation) и первый элемент, или null
+ */
+function detectTopLevelArray(obj) {
+  // Если сам JSON — массив объектов, path = ""
+  if (Array.isArray(obj) && obj.length > 0 && obj[0] !== null && typeof obj[0] === 'object') {
+    return { path: '', element: obj[0] };
+  }
+  if (!obj || typeof obj !== 'object') return null;
+
+  // BFS по уровням — берём первый найденный массив объектов на самом мелком уровне
+  let queue = Object.entries(obj).map(([k, v]) => ({ key: k, value: v, path: k }));
+  while (queue.length > 0) {
+    const candidates = [];
+    const nextLevel = [];
+    for (const { key, value, path } of queue) {
+      if (Array.isArray(value) && value.length > 0 && value[0] !== null && typeof value[0] === 'object') {
+        candidates.push({ path, element: value[0] });
+      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+        for (const [k, v] of Object.entries(value)) {
+          nextLevel.push({ key: k, value: v, path: `${path}.${k}` });
+        }
+      }
+    }
+    if (candidates.length >= 1) return candidates[0];
+    queue = nextLevel;
+  }
+  return null;
+}
+
+/**
  * Рекурсивно ищет в JSON свойство с именем arrayKey, значение которого — массив объектов,
  * и возвращает полный dot-notation путь (например "data.contacts").
  * @param {any} obj - JSON объект
@@ -708,12 +741,14 @@ function codeToRequestKey(code, sourceJson) {
  * @param {string[]} languages - Список кодов языков для генерации названий полей
  * @returns {Promise<Object>} - Объект с полями fields и request
  */
-export async function generateTargetJson(sourceType, sourceValue, languages = ['en', 'ru'], { signal } = {}) {
+export async function generateTargetJson(sourceType, sourceValue, languages = ['en', 'ru'], { signal, considerArrayPath = false } = {}) {
   const instructionPrompt = getInstructionPrompt(languages);
 
   // Формируем промпт на основе типа источника
   let userPrompt = '';
   let batchedResult = null; // Результат батч-генерации для больших JSON
+  let detectedPathToArray = null; // Путь к верхнеуровневому массиву (если considerArrayPath)
+  let arrayElementJson = null; // Элемент массива для генерации полей
 
   switch (sourceType) {
     case 'url':
@@ -727,9 +762,23 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       let optimizedJson = sourceValue;
       try {
         const parsedJson = JSON.parse(sourceValue);
+
+        // Если включён режим поиска массива, ищем верхнеуровневый массив
+        if (considerArrayPath) {
+          const detected = detectTopLevelArray(parsedJson);
+          if (detected) {
+            detectedPathToArray = detected.path; // "" для корневого массива, "obj.DataItems" для вложенного
+            arrayElementJson = detected.element;
+            console.log(`[AI] Обнаружен верхнеуровневый массив: pathToArray="${detectedPathToArray}"`);
+          }
+        }
+
+        // Если нашли массив — генерируем поля из элемента массива, иначе из полного JSON
+        const jsonForGeneration = arrayElementJson || parsedJson;
+
         // Уплощаем JSON до листовых полей с ключами через "__" для корректного подсчёта.
         // Это позволяет батчиться даже если все поля вложены в один объект (напр. { data: { ...260 полей... } }).
-        const flatJson = flattenJsonForBatch(parsedJson);
+        const flatJson = flattenJsonForBatch(jsonForGeneration);
         const allKeys = Object.keys(flatJson);
 
         // Батч-генерация для больших JSON (>FIELDS_BATCH_SIZE листовых полей)
@@ -795,7 +844,7 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
           };
         } else {
           // Создаём упрощённую версию: сохраняем структуру, но ограничиваем длину значений
-          optimizedJson = JSON.stringify(createOptimizedJsonStructure(parsedJson), null, 2);
+          optimizedJson = JSON.stringify(createOptimizedJsonStructure(jsonForGeneration), null, 2);
           userPrompt = `Пример JSON-данных:\n${optimizedJson}\n\nПроанализируй этот JSON и создай отдельное поле в массиве "fields" для КАЖДОГО свойства JSON.\n\nВАЖНО:\n- В fields[].data.code: используй двойное подчёркивание "__" вместо точек (например, "vars__name" вместо "vars.name")\n- В request.fields[].data.key: используй точки для маппинга (например, "vars.name")\n- В response.fields[].data.key: используй точки для маппинга (например, "result.data.name")\n\nОпредели тип каждого поля на основе его значения.\n\n${instructionPrompt}`;
         }
       } catch (e) {
@@ -818,11 +867,13 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
     rowSections: result.rowSections?.map(s => ({ code: s.data?.code, fieldsCount: s.fields?.length, fields: s.fields?.map(f => ({ code: f.data?.code, valueType: f.data?.valueType })) })),
   }, null, 2));
 
-  // Сохраняем исходный JSON для определения форматов дат и unix timestamp в постобработке
+  // Сохраняем исходный JSON для определения форматов дат и unix timestamp в постобработке.
+  // Если включён режим pathToArray и массив найден — используем элемент массива как sourceJson,
+  // т.к. поля генерируются из элемента, а не из полного JSON.
   let sourceJson = null;
   if (sourceType === 'json') {
     try {
-      sourceJson = JSON.parse(sourceValue);
+      sourceJson = arrayElementJson || JSON.parse(sourceValue);
     } catch (e) { /* ignore */ }
   } else if (sourceType === 'curl') {
     // Извлекаем JSON тело из curl команды (ищем первый {...} блок)
@@ -1688,17 +1739,35 @@ Use only the languages listed above.`;
     }
   }
 
+  // Сохраняем pathToArray в результат (detectedPathToArray доступен из замыкания case 'json')
+  // Для sourceType !== 'json' detectedPathToArray будет undefined, что даст null
+  const effectivePathToArray = (typeof detectedPathToArray === 'string') ? detectedPathToArray : null;
+  result.pathToArray = effectivePathToArray;
+
+  // Если pathToArray задан, проставляем isInArrayElement на rowSections по умолчанию
+  if (effectivePathToArray !== null && result.rowSections && Array.isArray(result.rowSections)) {
+    result.rowSections.forEach(section => {
+      if (section.data && section.data.isInArrayElement === undefined) {
+        section.data.isInArrayElement = true;
+      }
+    });
+  }
+
   // Перестраиваем request.fields и response.fields на основе isEditable:
   // isEditable = true → request.fields, isEditable = false → response.fields
   if (!result.request) result.request = {};
   if (!result.request.response || typeof result.request.response !== 'object') {
     result.request.response = {
-      data: { format: 0, pathToArray: null, filter: [], useRequestData: 0, preScript: '', postScript: '' },
+      data: { format: 0, pathToArray: effectivePathToArray, filter: [], useRequestData: 0, preScript: '', postScript: '' },
       fields: [],
       headers: [],
       statusHandlers: [],
       cfsMappings: [],
     };
+  } else {
+    // Обновляем pathToArray в существующем response.data
+    if (!result.request.response.data) result.request.response.data = {};
+    result.request.response.data.pathToArray = effectivePathToArray;
   }
   result.request.fields = [];
   result.request.response.fields = [];
@@ -1732,7 +1801,7 @@ Use only the languages listed above.`;
           data: {
             key,
             code,
-            isInArrayElement: false,
+            isInArrayElement: effectivePathToArray !== null,
             formatCfg: null,
           },
           children: [],
@@ -1821,7 +1890,7 @@ Use only the languages listed above.`;
           data: {
             key: arrayKeyPath,
             code: sectionCode,
-            isInArrayElement: false,
+            isInArrayElement: !!section.data?.isInArrayElement,
             formatCfg: null,
           },
           children: responseChildren,

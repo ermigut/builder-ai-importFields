@@ -12,7 +12,10 @@ import './ConfigBuilderPage.css';
  * Перестраивает request.fields и response.fields на основе isEditable.
  * Вызывается при каждом изменении fields или rowSections в UI.
  */
-function rebuildRequestFields(fields, rowSections, currentRequest) {
+function rebuildRequestFields(fields, rowSections, currentRequest, pathToArray = undefined) {
+  // Если pathToArray не задан (null), все isInArrayElement должны быть false
+  const hasPathToArray = pathToArray !== null && pathToArray !== undefined;
+
   // Сохраняем formatCfg существующих полей (code → formatCfg)
   // и правильные ключи (code → key), установленные бэкендом через codeToRequestKey.
   // Это нужно чтобы не затирать top-level literal-ключи вроде "statusSetBy__active"
@@ -86,7 +89,7 @@ function rebuildRequestFields(fields, rowSections, currentRequest) {
       newResponseFields.push({
         id: null,
         versionId: null,
-        data: { key, code, isInArrayElement: false, formatCfg: null },
+        data: { key, code, isInArrayElement: hasPathToArray && !!(field.data?.isInArrayElement), formatCfg: null },
         children: [],
         cfsMappings: [],
       });
@@ -147,7 +150,7 @@ function rebuildRequestFields(fields, rowSections, currentRequest) {
       newResponseFields.push({
         id: null,
         versionId: null,
-        data: { key: arrayKeyPath, code: sectionCode, isInArrayElement: false, formatCfg: null },
+        data: { key: arrayKeyPath, code: sectionCode, isInArrayElement: hasPathToArray && !!section.data?.isInArrayElement, formatCfg: null },
         children: nonEditableFields.map(field => ({
           id: null,
           versionId: null,
@@ -170,6 +173,10 @@ function rebuildRequestFields(fields, rowSections, currentRequest) {
     fields: newRequestFields,
     response: {
       ...(currentRequest?.response || {}),
+      data: {
+        ...(currentRequest?.response?.data || {}),
+        ...(pathToArray !== undefined ? { pathToArray: pathToArray ?? null } : {}),
+      },
       fields: newResponseFields,
     },
   };
@@ -209,6 +216,9 @@ function ConfigBuilderPage() {
   const [entityId, setEntityId] = useState(''); // ID сущности (целое число)
   const [triggerBehaviourType, setTriggerBehaviourType] = useState(null); // 1=API, 2=Webhook (только для триггеров)
   const [triggerResponseId, setTriggerResponseId] = useState(null); // ID объекта response у Webhook-триггера
+
+  const [considerArrayPath, setConsiderArrayPath] = useState(false);
+  const [pathToArray, setPathToArray] = useState(null); // null = не задан, '' = в корне, 'obj.DataItems' = путь
 
   const [sourceData, setSourceData] = useState({ type: '', value: '' });
   const [isGenerating, setIsGenerating] = useState(false);
@@ -313,6 +323,11 @@ function ConfigBuilderPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [albatoToken, versionId, entityType, domainZone]);
 
+  // Дефолт для галочки "Путь к массиву" при смене типа сущности
+  useEffect(() => {
+    setConsiderArrayPath(entityType === 'trigger');
+  }, [entityType]);
+
   // Обновляем behaviourType и responseId при выборе триггера из списка
   useEffect(() => {
     if (entityType !== 'trigger' || !entityId) {
@@ -401,6 +416,7 @@ function ConfigBuilderPage() {
         sourceType: sourceData.type,
         sourceValue: sourceData.value.trim(),
         languages: versionLanguages,
+        considerArrayPath,
       };
 
       const response = await api.post('/ai/generate', requestData, { signal: controller.signal });
@@ -410,10 +426,15 @@ function ConfigBuilderPage() {
       console.log('Fields:', response.data.fields);
       console.log('Request:', response.data.request);
       
-      // Для триггеров все поля по умолчанию не редактируемые (кладутся в response)
+      // Получаем pathToArray из ответа бэкенда
+      const detectedPathToArray = response.data.pathToArray ?? null;
+      setPathToArray(detectedPathToArray);
+
+      // Для триггеров и для действий с включённым pathToArray — поля не редактируемые (кладутся в response)
       let newFields = response.data.fields || [];
       let newRowSections = response.data.rowSections || [];
-      if (entityType === 'trigger') {
+      const shouldForceNonEditable = entityType === 'trigger' || (considerArrayPath && detectedPathToArray !== null);
+      if (shouldForceNonEditable) {
         newFields = newFields.map(field => ({
           ...field,
           data: field.data ? { ...field.data, isEditable: false } : field.data,
@@ -427,8 +448,16 @@ function ConfigBuilderPage() {
         }));
       }
 
+      // Если pathToArray найден, проставляем isInArrayElement: true на всех верхнеуровневых полях
+      if (detectedPathToArray !== null) {
+        newFields = newFields.map(field => ({
+          ...field,
+          data: field.data ? { ...field.data, isInArrayElement: true } : field.data,
+        }));
+      }
+
       // Пересчитываем request.fields / response.fields на основе финального isEditable
-      const rebuiltRequest = rebuildRequestFields(newFields, newRowSections, response.data.request || {});
+      const rebuiltRequest = rebuildRequestFields(newFields, newRowSections, response.data.request || {}, detectedPathToArray);
 
       // Сохраняем результат для отображения и редактирования
       const newData = {
@@ -792,6 +821,24 @@ function ConfigBuilderPage() {
           </div>
         </div>
 
+        {entityId && (
+          <div className="array-path-option">
+            <label className="array-path-checkbox-label">
+              <input
+                type="checkbox"
+                checked={considerArrayPath}
+                onChange={(e) => setConsiderArrayPath(e.target.checked)}
+              />
+              Учитывать при генерации путь к массиву данных
+            </label>
+            <span className="array-path-hint">
+              При включении AI найдёт верхнеуровневый массив и использует его как pathToArray.
+              <br />
+              Все поля вне этого массива будут проигнорированы
+            </span>
+          </div>
+        )}
+
         <div className={`source-section${!entityId ? ' source-section--disabled' : ''}`}>
           {!entityId && (
             <div className="source-section-hint">
@@ -817,7 +864,7 @@ function ConfigBuilderPage() {
             )}
             {generatedData && (
               <button
-                onClick={() => setGeneratedData(null)}
+                onClick={() => { setGeneratedData(null); setPathToArray(null); }}
                 className="reset-button"
               >
                 Сбросить
@@ -829,15 +876,69 @@ function ConfigBuilderPage() {
         {generatedData && (
           <div className="generated-content">
             <h2>Сгенерированная конфигурация</h2>
-            
+
+            <div className="path-to-array-editor">
+              <label htmlFor="path-to-array">Путь к массиву данных:</label>
+              {pathToArray !== null ? (
+                <div className="path-to-array-input-group">
+                  <input
+                    id="path-to-array"
+                    type="text"
+                    value={pathToArray}
+                    onChange={(e) => {
+                      const newPath = e.target.value;
+                      setPathToArray(newPath);
+                      setGeneratedData(prev => ({
+                        ...prev,
+                        request: rebuildRequestFields(prev.fields, prev.rowSections || [], prev.request, newPath),
+                      }));
+                    }}
+                    placeholder="Пусто = В корне"
+                    className="path-to-array-input"
+                  />
+                  {pathToArray === '' && <span className="root-tag">В корне</span>}
+                  <button
+                    className="path-to-array-remove-btn"
+                    onClick={() => {
+                      setPathToArray(null);
+                      setGeneratedData(prev => ({
+                        ...prev,
+                        request: rebuildRequestFields(prev.fields, prev.rowSections || [], prev.request, null),
+                      }));
+                    }}
+                    title="Убрать путь к массиву"
+                  >
+                    Убрать
+                  </button>
+                </div>
+              ) : (
+                <div className="path-to-array-input-group">
+                  <span className="path-to-array-empty">Не задан</span>
+                  <button
+                    className="path-to-array-add-btn"
+                    onClick={() => {
+                      setPathToArray('');
+                      setGeneratedData(prev => ({
+                        ...prev,
+                        request: rebuildRequestFields(prev.fields, prev.rowSections || [], prev.request, ''),
+                      }));
+                    }}
+                  >
+                    Задать путь
+                  </button>
+                </div>
+              )}
+            </div>
+
             <FieldsTable
               fields={generatedData.fields || []}
               languages={versionLanguages}
+              showIsInArrayElement={pathToArray !== null}
               onFieldsChange={(updatedFields) => {
                 setGeneratedData({
                   ...generatedData,
                   fields: updatedFields,
-                  request: rebuildRequestFields(updatedFields, generatedData.rowSections || [], generatedData.request),
+                  request: rebuildRequestFields(updatedFields, generatedData.rowSections || [], generatedData.request, pathToArray),
                 });
               }}
             />
@@ -845,11 +946,12 @@ function ConfigBuilderPage() {
             <RowSectionsTable
               rowSections={generatedData.rowSections || []}
               languages={versionLanguages}
+              showIsInArrayElement={pathToArray !== null}
               onRowSectionsChange={(updatedSections) => {
                 setGeneratedData({
                   ...generatedData,
                   rowSections: updatedSections,
-                  request: rebuildRequestFields(generatedData.fields || [], updatedSections, generatedData.request),
+                  request: rebuildRequestFields(generatedData.fields || [], updatedSections, generatedData.request, pathToArray),
                 });
               }}
             />
