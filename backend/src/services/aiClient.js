@@ -311,9 +311,9 @@ ${sectionFieldTitleLines},
    - 1 (String) - для строк, текстовых значений, чисел в кавычках, объектов (сериализованных как строка)
    - 2 (Int) - для целых чисел (НО НЕ для unix timestamp - см. ниже)
    - 3 (Decimal) - для десятичных чисел (с плавающей точкой)
-   - 5 (DateTime) - для даты и времени (форматы ISO, unix timestamp и т.д.)
+   - 5 (DateTime) - для даты+время (содержит "T" или пробел между датой и временем, напр. "2024-01-15T10:30:00Z", "2024-01-15 10:30:00", unix timestamp и т.д.)
    - 7 (File) - для файлов, путей к файлам, base64-encoded данных
-   - 8 (Date) - для дат (без времени)
+   - 8 (Date) - для дат БЕЗ времени (только "YYYY-MM-DD", напр. "2024-01-15")
    - 9 (Boolean) - ТОЛЬКО для настоящих JSON-булевых значений (true/false без кавычек). Строки "0", "1", "true", "false" в кавычках — это String (1), НЕ Boolean!
    - 101 (StringArray) - для массивов строк
    - 102 (IntArray) - для массивов целых чисел
@@ -321,7 +321,7 @@ ${sectionFieldTitleLines},
    - Unix timestamp в секундах (10 цифр, значение от 1000000000 до 9999999999, например 1770729544) -> 5 (DateTime)
    - Unix timestamp в миллисекундах (13 цифр, значение от 1000000000000 до 9999999999999, например 1770732087654) -> 5 (DateTime)
    Если число выглядит как unix timestamp (10 или 13 цифр в указанных диапазонах), это дата и время.
-   Примеры: строка "test" -> 1, число 42 -> 2, число 3.14 -> 3, unix timestamp в секундах 1770729544 -> 5 (DateTime), unix timestamp в миллисекундах 1770732087654 -> 5 (DateTime), true/false -> 9, массив ["a", "b"] -> 101, массив [1, 2, 3] -> 102.
+   Примеры: строка "test" -> 1, число 42 -> 2, число 3.14 -> 3, "2024-01-15T10:30:00Z" -> 5 (DateTime), unix timestamp 1770729544 -> 5 (DateTime), unix timestamp ms 1770732087654 -> 5 (DateTime), "2024-01-15" -> 8 (Date, без времени!), true/false -> 9, массив ["a", "b"] -> 101, массив [1, 2, 3] -> 102.
 8. **Названия полей:** Используй осмысленные названия на всех указанных языках: ${langListStr}. ОБЯЗАТЕЛЬНО заполняй названия на КАЖДОМ из перечисленных языков — не пропускай ни один язык. Примеры переводов: для "name" -> ${exampleTitleStr}; для "amount" -> ${exampleAmountStr}; для "status" -> ${exampleStatusStr}.
    ⚠️ **КОНТЕКСТ ДЛЯ ВЛОЖЕННЫХ ПОЛЕЙ:** Если ключ сам по себе неоднозначен (например: id, name, type, month, day, value, text, title, code, order, count, public, flag и т.п.), ОБЯЗАТЕЛЬНО включай в название контекст родительского объекта. Примеры: поле "month" внутри "birthdate" → "Birthdate Month" / "Месяц дня рождения"; поле "id" внутри "pipeline" → "Pipeline ID" / "ID воронки"; поле "name" внутри "column" → "Column Name" / "Название столбца"; поле "public" внутри "profile_ids" → "Profile Public ID" / "Публичный ID профиля". Исключение 1: если ключ уже полностью описывает себя (например, "businessEmail", "fullName", "created_at") — родительский контекст не нужен. Исключение 2: для прямых полей элементов rowSection (массива) НЕ добавляй название самого массива как контекст — пользователь и так видит заголовок секции. Пример: поле "id" внутри массива "lead_lists" → просто "ID" / "ID", НЕ "Lead List ID"; поле "status" → просто "Status" / "Статус".
 9. В "request.data.url" ОБЯЗАТЕЛЬНО укажи РЕАЛЬНЫЙ URL из исходных данных (если в исходных данных есть URL, используй его, иначе используй пустую строку, НЕ используй плейсхолдеры типа "<URL внешнего API>")
@@ -411,7 +411,7 @@ ${sectionFieldTitleLines}
 2. Коды: если ключ уже содержит __ (например "csr__phone") — используй его КАК ЕСТЬ, не добавляй префиксы. Вложенные объекты разворачивай в плоские коды через __ только если во входном JSON есть реальная вложенность.
 3. СТРОГО: генерируй поля ТОЛЬКО для ключей из входного JSON. Не придумывай и не добавляй поля, которых нет во входном JSON.
 4. Массивы объектов → rowSections. Массивы примитивов → поля типа 101/102 в fields.
-5. Типы: ISO-дата → 5, дата без времени → 8, bool → 9, int → 2, decimal → 3, строка → 1.
+5. Типы: дата+время (содержит "T" или пробел между датой и временем, напр. "2024-01-15T10:30:00Z", "2024-01-15 10:30:00") → 5, дата БЕЗ времени (только "YYYY-MM-DD", напр. "2024-01-15") → 8, bool → 9, int → 2, decimal → 3, строка → 1.
 6. Названия полей на ВСЕХ языках: ${langListStr}. Осмысленные переводы.
 7. Игнорируй ключи customFields, custom_fields, cfs, cfsMappings и их вариации.
 8. Все коды должны быть уникальными. Не используй числовые индексы в кодах (lead__0__id → НЕПРАВИЛЬНО).
@@ -445,8 +445,8 @@ function flattenJsonForBatch(obj, prefix = '') {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return result;
   for (const [key, value] of Object.entries(obj)) {
     if (isCustomFieldKey(key)) continue;
-    // Пробелы в ключах заменяем на "_", т.к. Albato не допускает пробелы в кодах полей
-    const sanitizedKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
+    // Пробелы и тире в ключах заменяем на "_", т.к. Albato не допускает их в кодах полей
+    const sanitizedKey = key.replace(/[ -]/g, '_');
     const code = prefix ? `${prefix}__${sanitizedKey}` : sanitizedKey;
     if (value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0) {
       // Непустой объект — уходим глубже
@@ -716,7 +716,10 @@ function codeToRequestKey(code, sourceJson) {
       // Пробуем точное совпадение, а также вариант с пробелами вместо "_"
       // (пробелы в ключах заменяются на "_" при генерации кода в flattenJsonForBatch)
       const candidates = [key];
-      if (key.includes('_')) candidates.push(key.replace(/_/g, ' '));
+      if (key.includes('_')) {
+        candidates.push(key.replace(/_/g, ' '));
+        candidates.push(key.replace(/_/g, '-'));
+      }
       for (const candidate of candidates) {
         if (Object.prototype.hasOwnProperty.call(obj, candidate)) {
           const nextAcc = accumulated ? `${accumulated}.${candidate}` : candidate;
@@ -890,7 +893,7 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
 
   // Постобработка: нормализация кодов — пробелы → "_" (Albato не допускает пробелы в кодах)
   // и дедупликация (AI может сгенерировать и "my snippet label", и "my_snippet_label")
-  const sanitizeFieldCode = (code) => code ? code.replace(/ /g, '_') : code;
+  const sanitizeFieldCode = (code) => code ? code.replace(/[ -]/g, '_') : code;
   if (result.fields && Array.isArray(result.fields)) {
     const seenCodes = new Set();
     result.fields.forEach(field => {
@@ -952,6 +955,13 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return undefined;
     const [k, ...rest] = ks;
     if (k in obj) return resolveWithIntermediates(obj[k], rest);
+    // Пробуем варианты с пробелами/тире вместо "_" (sanitization обратима)
+    if (k.includes('_')) {
+      const spaceKey = k.replace(/_/g, ' ');
+      if (spaceKey in obj) return resolveWithIntermediates(obj[spaceKey], rest);
+      const hyphenKey = k.replace(/_/g, '-');
+      if (hyphenKey in obj) return resolveWithIntermediates(obj[hyphenKey], rest);
+    }
     for (const [vk, vv] of Object.entries(obj)) {
       if (vk.startsWith('_') && vv !== null && typeof vv === 'object' && !Array.isArray(vv)) {
         const found = resolveWithIntermediates(vv, ks);
@@ -1042,7 +1052,7 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return paths;
       for (const [key, value] of Object.entries(obj)) {
         if (isCustomFieldKey(key)) continue;
-        const sanitizedKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
+        const sanitizedKey = key.replace(/[ -]/g, '_');
         const path = prefix ? `${prefix}__${sanitizedKey}` : sanitizedKey;
         if (Array.isArray(value) && value.length > 0 && value[0] !== null && typeof value[0] === 'object') {
           paths.push(path);
@@ -1194,12 +1204,53 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
                       field.data.valueType = 5; // DateTime
                     }
                   }
+                  // AI сказал DateTime (5), но значение — date-only строка → Date (8)
+                  if (typeof val === 'string' && field.data.valueType === 5 && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
+                    field.data.valueType = 8;
+                  }
                 }
               } catch (_) { /* ignore */ }
             }
 
             return field;
           });
+
+          // Фильтруем поля, путь которых проходит через или указывает на вложенный массив объектов.
+          // AI может сгенерировать поля вроде entry__resource__identifier__use, где identifier — массив объектов.
+          if (sourceJsonForFields && section.data?.code) {
+            const sectionCodeStr = String(section.data.code).replace(/\./g, '__');
+            const sectionKeys = sectionCodeStr.split('__');
+            const arrVal = resolveWithIntermediates(sourceJsonForFields, sectionKeys);
+            const firstItem = Array.isArray(arrVal) && arrVal.length > 0 && arrVal[0] !== null && typeof arrVal[0] === 'object'
+              ? arrVal[0] : null;
+            if (firstItem) {
+              section.fields = section.fields.filter(field => {
+                if (!field.data?.code) return true;
+                const fieldCode = String(field.data.code).replace(/\./g, '__');
+                const sectionPrefix = sectionCodeStr + '__';
+                if (!fieldCode.startsWith(sectionPrefix)) return true;
+                const subPath = fieldCode.slice(sectionPrefix.length);
+                const subParts = subPath.split('__');
+                let current = firstItem;
+                for (let i = 0; i < subParts.length; i++) {
+                  if (current === null || current === undefined) break;
+                  if (Array.isArray(current) && current.length > 0 && current[0] !== null && typeof current[0] === 'object') {
+                    return false; // путь проходит через вложенный массив объектов
+                  }
+                  if (typeof current === 'object' && !Array.isArray(current)) {
+                    current = current[subParts[i]];
+                  } else {
+                    break;
+                  }
+                }
+                // Проверяем финальное значение
+                if (Array.isArray(current) && current.length > 0 && current[0] !== null && typeof current[0] === 'object') {
+                  return false;
+                }
+                return true;
+              });
+            }
+          }
         } else {
           section.fields = [];
         }
@@ -1251,7 +1302,7 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
       for (const [key, value] of Object.entries(obj)) {
         if (isCustomFieldKey(key)) continue;
-        const sanitizedKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
+        const sanitizedKey = key.replace(/[ -]/g, '_');
         const code = prefix ? `${prefix}__${sanitizedKey}` : sanitizedKey;
         if (Array.isArray(value) && value.length > 0 && value[0] !== null && typeof value[0] === 'object') {
           if (!existingSectionCodes.has(code) && !normalizedSectionCodes.has(normCode(code)) && !collapsedSectionCodes.has(collapseCode(code))) {
@@ -1298,7 +1349,7 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
         const fields = [];
         // Генерирует заголовок с родительским контекстом (всегда, если есть родитель)
         const toTitleCase = (s) => s.replace(/\b\w/g, c => c.toUpperCase());
-        const segToTitle = (s) => toTitleCase(s.replace(/^_+/, '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'));
+        const segToTitle = (s) => toTitleCase(s.replace(/^_+/, '').replace(/_/g, ' ').replace(/-/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'));
         const makeAutoTitle = (k, codeStr) => {
           const leafTitle = segToTitle(k);
           const parts = codeStr.split('__');
@@ -1310,7 +1361,7 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
         const recurse = (obj, prefix) => {
           for (const [k, v] of Object.entries(obj)) {
             if (isCustomFieldKey(k)) continue;
-            const sanitizedK = k.includes(' ') ? k.replace(/ /g, '_') : k;
+            const sanitizedK = k.replace(/[ -]/g, '_');
             const fieldCode = `${prefix}__${sanitizedK}`;
             if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
               recurse(v, fieldCode);
@@ -1415,6 +1466,10 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
               field.data.valueType = 5;
             }
           }
+          // AI сказал DateTime (5), но значение — date-only строка → Date (8)
+          if (typeof value === 'string' && field.data.valueType === 5 && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+            field.data.valueType = 8;
+          }
         }
       }
 
@@ -1468,7 +1523,7 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       for (const [key, value] of Object.entries(obj)) {
         if (isCustomFieldKey(key)) continue;
         // Пробелы → "_" для совместимости с Albato (как в flattenJsonForBatch)
-        const sanitizedKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
+        const sanitizedKey = key.replace(/[ -]/g, '_');
         const code = `${prefix}__${sanitizedKey}`;
         if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
           // Вложенный plain объект — если AI ошибочно создал плоское поле для этого пути, удаляем
@@ -1499,11 +1554,11 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
               }
             } else if (typeof value === 'string') {
               if (/^\d{4}-\d{2}-\d{2}T/.test(value)) valueType = 5;
-              else if (/^\d{4}-\d{2}-\d{2}$/.test(value)) valueType = 4;
+              else if (/^\d{4}-\d{2}-\d{2}$/.test(value)) valueType = 8;
             }
             // Авто-заголовок с родительским контекстом (всегда, если есть родитель)
             const _toTitleCase = (s) => s.replace(/\b\w/g, c => c.toUpperCase());
-            const _seg = (s) => _toTitleCase(s.replace(/^_+/, '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'));
+            const _seg = (s) => _toTitleCase(s.replace(/^_+/, '').replace(/_/g, ' ').replace(/-/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'));
             const _codeParts = code.split('__');
             const autoTitle = _codeParts.length >= 3
               ? `${_seg(_codeParts[_codeParts.length - 2])} ${_seg(key)}`
@@ -1528,13 +1583,52 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
       }
     };
 
-    // Запускаем только для top-level plain nested objects (не для скаляров верхнего уровня)
+    // Запускаем для всех top-level ключей: nested objects рекурсивно, скаляры — напрямую
     for (const [key, value] of Object.entries(sourceJsonForFields)) {
       if (isCustomFieldKey(key)) continue;
-      const sanitizedTopKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
+      const sanitizedTopKey = key.replace(/[ -]/g, '_');
       if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
         fillMissing(value, sanitizedTopKey);
+      } else if (!Array.isArray(value) || value.length === 0 || typeof value[0] !== 'object') {
+        // Top-level скаляр, null или массив примитивов — проверяем, не пропустил ли AI
+        const code = sanitizedTopKey;
+        if (!existingCodes.has(code) && !normalizedExistingCodes.has(normalizeCode(code))) {
+          let valueType = 1;
+          if (Array.isArray(value)) {
+            const first = value.find(v => v !== null && v !== '');
+            valueType = (first !== undefined && typeof first === 'number') ? 102 : 101;
+          } else if (typeof value === 'boolean') valueType = 9;
+          else if (typeof value === 'number') {
+            if (Number.isInteger(value)) {
+              if ((value >= 1e9 && value <= 9999999999) || (value >= 1e12 && value <= 9999999999999)) valueType = 5;
+              else valueType = 2;
+            } else {
+              valueType = 3;
+            }
+          } else if (typeof value === 'string') {
+            if (/^\d{4}-\d{2}-\d{2}T/.test(value)) valueType = 5;
+            else if (/^\d{4}-\d{2}-\d{2}$/.test(value)) valueType = 8;
+          }
+          const _toTitleCase = (s) => s.replace(/\b\w/g, c => c.toUpperCase());
+          const _seg = (s) => _toTitleCase(s.replace(/^_+/, '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/-/g, ' '));
+          const autoTitle = _seg(key);
+          const fieldTitles = {};
+          for (const lang of languages) {
+            fieldTitles[langToTitleKey(lang)] = autoTitle;
+          }
+          missingFields.push({
+            id: null,
+            versionId: null,
+            data: { code, isEditable: true, isRequired: false, valueType, formatCfg: null },
+            ...fieldTitles,
+            children: [],
+            cfsMappings: [],
+          });
+          existingCodes.add(code);
+          normalizedExistingCodes.add(normalizeCode(code));
+        }
       }
+      // Массив объектов — пропускаем (обрабатывается rowSections)
     }
 
     if (missingFields.length > 0) {
@@ -1586,7 +1680,7 @@ Use only the languages listed above.`;
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return paths;
       for (const [key, value] of Object.entries(obj)) {
         if (isCustomFieldKey(key)) continue;
-        const sanitizedKey = key.includes(' ') ? key.replace(/ /g, '_') : key;
+        const sanitizedKey = key.replace(/[ -]/g, '_');
         const code = prefix ? `${prefix}__${sanitizedKey}` : sanitizedKey;
         if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
           paths.push(...buildLeafPaths(value, code));
