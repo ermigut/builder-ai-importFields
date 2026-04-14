@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(npx vite:*)",
-      "Bash(node -c backend/src/services/aiClient.js)"
-    ]
-  }
-}
