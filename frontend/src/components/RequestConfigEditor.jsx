@@ -8,11 +8,6 @@ import './RequestConfigEditor.css';
  * @param {Function} props.onRequestChange - Callback при изменении request
  */
 function RequestConfigEditor({ request = {}, onRequestChange, hideRequestData = false }) {
-  // Логирование для отладки
-  console.log('RequestConfigEditor received request:', request);
-  console.log('Request fields count:', request.fields?.length || 0);
-  console.log('Request response fields count:', request.response?.fields?.length || 0);
-  
   const [expandedSections, setExpandedSections] = useState({
     data: true,
     fields: false,
@@ -121,8 +116,6 @@ function RequestConfigEditor({ request = {}, onRequestChange, hideRequestData = 
             {request.fields && request.fields.length > 0 ? (
               <div className="fields-list">
                 {request.fields.map((field, index) => {
-                  console.log(`Rendering request field ${index}:`, field);
-                  console.log(`Request field data:`, field.data);
                   return (
                     <div key={index} className="field-item">
                       <strong>Ключ:</strong> {field?.data?.key ?? '-'} |{' '}
@@ -168,8 +161,6 @@ function RequestConfigEditor({ request = {}, onRequestChange, hideRequestData = 
               <div className="fields-list">
                 <h4>Поля ответа:</h4>
                 {request.response.fields.map((field, index) => {
-                  console.log(`Rendering response field ${index}:`, field);
-                  console.log(`Response field data:`, field.data);
                   return (
                     <div key={index} className="field-item">
                       <strong>Ключ:</strong> {field?.data?.key ?? '-'} |{' '}

@@ -17,6 +17,11 @@ const openai = OPENAI_API_KEY
     })
   : null;
 
+/** Возвращает инстанс OpenAI клиента (для переиспользования в других модулях) */
+export function getOpenAIClient() {
+  return openai;
+}
+
 /**
  * Генерирует JSON-ответ от ИИ на основе промпта
  * @param {string} prompt - Промпт для ИИ
@@ -279,9 +284,10 @@ ${sectionFieldTitleLines},
      * КРИТИЧЕСКИ ВАЖНО про экранирование: В JSON строке обратный слеш должен быть удвоен! Для получения \T в PHP формате, в JSON строке пиши \\T (два обратных слеша). То же для \Z - в JSON пиши \\Z.
      * Символы, не являющиеся форматирующими (например, T в ISO 8601), должны быть экранированы обратным слешем в PHP формате (\T, \Z), но в JSON строке это будет выглядеть как \\T и \\Z (двойной слеш).
      Попытайся определить формат на основе примера значения в JSON:
-     * ISO 8601 с миллисекундами и таймзоной:
-       - Если заканчивается на "Z" (например "2012-02-22T02:06:58.147Z") -> ОБЯЗАТЕЛЬНО используй формат "Y-m-d\\TH:i:s.v\\Z" (два обратных слеша перед T и Z в JSON строке!). Это даст Y-m-d\TH:i:s.v\Z в PHP.
-       - Если заканчивается на смещение (например "2012-02-22T02:06:58.147+00:00") -> в JSON строке должно быть "Y-m-d\\TH:i:s.vp" (где .v - миллисекунды, p - таймзона в формате +02:00, возвращает Z для +00:00)
+     * ISO 8601 с дробными секундами (миллисекунды, микросекунды и т.д.) и таймзоной:
+       ВАЖНО: Количество цифр после точки может быть ЛЮБЫМ (3 — миллисекунды, 6 — микросекунды, 7 цифр — .NET формат и т.д.). Независимо от количества цифр, ВСЕГДА используй ".v" в формате.
+       - Если заканчивается на "Z" (например "2012-02-22T02:06:58.147Z" или "2012-02-22T02:06:58.000000Z") -> ОБЯЗАТЕЛЬНО используй формат "Y-m-d\\TH:i:s.v\\Z" (два обратных слеша перед T и Z в JSON строке!). Это даст Y-m-d\TH:i:s.v\Z в PHP.
+       - Если заканчивается на смещение (например "2012-02-22T02:06:58.147+00:00" или "2020-01-01T12:00:00.0000000+00:00") -> в JSON строке должно быть "Y-m-d\\TH:i:s.vp" (где .v - дробные секунды, p - таймзона в формате +02:00, возвращает Z для +00:00)
      * ISO 8601 без миллисекунд:
        - Если заканчивается на "Z" (например "2024-01-15T10:30:00Z") -> в JSON строке должно быть "Y-m-d\\TH:i:s\\Z" (обрати внимание: двойной обратный слеш \\T и \\Z)
        - Если заканчивается на смещение (например "2024-01-15T10:30:00+00:00") -> в JSON строке должно быть "Y-m-d\\TH:i:sP" (где P - таймзона с двоеточием)
@@ -298,8 +304,8 @@ ${sectionFieldTitleLines},
    - "timezone": строка часового пояса (например "+0000", "+0300", "-0500"). Попытайся определить на основе примера значения (например, если в значении есть "+03:00", используй "+0300"). Если не удалось определить, используй дефолт "+0000"
    Примеры для DateTime:
    - Стандартный формат: {"formatCfg": {"format": "Y-m-d H:i:s", "timezone": "+0000", "valueType": 1}}
-   - ISO 8601 с миллисекундами и Z: {"formatCfg": {"format": "Y-m-d\\TH:i:s.v\\Z", "timezone": "+0000", "valueType": 1}} (для "2012-02-22T02:06:58.147Z", обрати внимание что T и Z экранированы как \\T и \\Z, .v - миллисекунды согласно PHP документации)
-   - ISO 8601 с миллисекундами и смещением: {"formatCfg": {"format": "Y-m-d\\TH:i:s.vp", "timezone": "+0000", "valueType": 1}} (для "2012-02-22T02:06:58.147+00:00", .v - миллисекунды, p - таймзона)
+   - ISO 8601 с дробными секундами и Z: {"formatCfg": {"format": "Y-m-d\\TH:i:s.v\\Z", "timezone": "+0000", "valueType": 1}} (для "2012-02-22T02:06:58.147Z" или "2012-02-22T02:06:58.000000Z", обрати внимание что T и Z экранированы как \\T и \\Z, .v - дробные секунды)
+   - ISO 8601 с дробными секундами и смещением: {"formatCfg": {"format": "Y-m-d\\TH:i:s.vp", "timezone": "+0000", "valueType": 1}} (для "2012-02-22T02:06:58.147+00:00" или "2020-01-01T12:00:00.0000000+00:00", .v - дробные секунды, p - таймзона)
    - ISO 8601 без миллисекунд с Z: {"formatCfg": {"format": "Y-m-d\\TH:i:s\\Z", "timezone": "+0000", "valueType": 1}} (для "2024-01-15T10:30:00Z")
    - ISO 8601 без миллисекунд со смещением: {"formatCfg": {"format": "Y-m-d\\TH:i:sP", "timezone": "+0000", "valueType": 1}} (для "2024-01-15T10:30:00+00:00")
    Пример для Date: {"formatCfg": {"format": "Y-m-d", "timezone": "+0000", "valueType": 1}}
@@ -571,9 +577,9 @@ function detectCommonDateFormat(sourceJson) {
     for (const value of Object.values(obj)) {
       if (typeof value === 'string' && value.length >= 10) {
         let fmt = null, tz = '+0000';
-        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/.test(value)) {
           fmt = 'Y-m-d\\TH:i:s.v\\Z';
-        } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]/.test(value)) {
+        } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+-]/.test(value)) {
           const m = value.match(/([+-]\d{2}):(\d{2})$/);
           if (m) tz = m[1] + m[2];
           fmt = 'Y-m-d\\TH:i:s.vp';
@@ -597,6 +603,56 @@ function detectCommonDateFormat(sourceJson) {
     }
   };
   scan(sourceJson);
+
+  if (formatCounts.size === 0) return null;
+  let best = null;
+  for (const { count, cfg } of formatCounts.values()) {
+    if (!best || count > best.count) best = { count, cfg };
+  }
+  return best?.cfg || null;
+}
+
+/**
+ * Сканирует сырой текст документации (rawText) и определяет наиболее часто
+ * встречающийся формат дат среди строковых значений (ISO 8601 и др.).
+ * Используется в чат-режиме, где нет распарсенного sourceJson.
+ * @param {string} rawText - Сырой текст документации
+ * @returns {Object|null} - { format, timezone, valueType } или null
+ */
+export function detectCommonDateFormatFromText(rawText) {
+  if (!rawText || typeof rawText !== 'string') return null;
+
+  const formatCounts = new Map();
+
+  // Ищем все строки, похожие на даты, в тексте
+  const dateRegex = /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?/g;
+  let match;
+  while ((match = dateRegex.exec(rawText)) !== null) {
+    const value = match[0];
+    let fmt = null, tz = '+0000';
+
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/.test(value)) {
+      fmt = 'Y-m-d\\TH:i:s.v\\Z';
+    } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:\d{2}$/.test(value)) {
+      const m = value.match(/([+-]\d{2}):(\d{2})$/);
+      if (m) tz = m[1] + m[2];
+      fmt = 'Y-m-d\\TH:i:s.vp';
+    } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) {
+      fmt = 'Y-m-d\\TH:i:s\\Z';
+    } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(value)) {
+      const m = value.match(/([+-]\d{2}):(\d{2})$/);
+      if (m) tz = m[1] + m[2];
+      fmt = 'Y-m-d\\TH:i:sP';
+    } else if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+      fmt = 'Y-m-d H:i:s';
+    }
+
+    if (fmt) {
+      const existing = formatCounts.get(fmt);
+      if (existing) { existing.count++; }
+      else { formatCounts.set(fmt, { count: 1, cfg: { format: fmt, timezone: tz, valueType: 1 } }); }
+    }
+  }
 
   if (formatCounts.size === 0) return null;
   let best = null;
@@ -636,7 +692,7 @@ function detectFormatCfg(valueType, key, sourceJson, commonDateFormatCfg = null)
           else if (val >= 1000000000000 && val <= 9999999999999) detectedFormat = 'Uv';
           else detectedFormat = 'U';
         } else if (typeof val === 'string') {
-          if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[Z+-]/.test(val)) {
+          if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[Z+-]/.test(val)) {
             if (val.endsWith('Z')) {
               detectedFormat = 'Y-m-d\\TH:i:s.v\\Z';
             } else {
@@ -861,14 +917,6 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
   }
 
   const result = batchedResult || await generateJsonFromPrompt(userPrompt, 'gpt-4o-mini', { signal });
-
-  // Логируем сырой ответ AI до постобработки
-  console.log('[AI RAW RESPONSE]', JSON.stringify({
-    fieldsCount: result.fields?.length,
-    rowSectionsCount: result.rowSections?.length,
-    fields: result.fields?.map(f => ({ code: f.data?.code, valueType: f.data?.valueType, titleEn: f.titleEn })),
-    rowSections: result.rowSections?.map(s => ({ code: s.data?.code, fieldsCount: s.fields?.length, fields: s.fields?.map(f => ({ code: f.data?.code, valueType: f.data?.valueType })) })),
-  }, null, 2));
 
   // Сохраняем исходный JSON для определения форматов дат и unix timestamp в постобработке.
   // Если включён режим pathToArray и массив найден — используем элемент массива как sourceJson,

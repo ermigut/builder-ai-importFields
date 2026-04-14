@@ -1,0 +1,430 @@
+/**
+ * Парсинг файлов API документации.
+ * Поддерживает: JSON, YAML/OpenAPI, PDF, текстовые файлы, загрузку по URL.
+ *
+ * Возвращает структуру:
+ * {
+ *   rawText: string,        // Текстовое представление для AI контекста
+ *   isOpenAPI: boolean,     // Является ли документ OpenAPI спекой
+ *   endpoints: Array,       // Извлечённые эндпоинты (если OpenAPI)
+ *   sourceType: string,     // Тип источника ('json', 'yaml', 'pdf', 'text', 'openapi')
+ *   docHash: string,        // SHA-256 хеш rawText для дедупликации
+ * }
+ */
+
+import { createHash } from 'node:crypto';
+import yaml from 'js-yaml';
+import SwaggerParser from '@apidevtools/swagger-parser';
+import axios from 'axios';
+
+/**
+ * Основная функция парсинга файла
+ * @param {Buffer|string} content - Содержимое файла (Buffer для PDF, string для остальных)
+ * @param {string} mimeType - MIME тип файла
+ * @param {string} filename - Имя файла
+ * @returns {Promise<Object>} Распарсенный контент
+ */
+export async function parseFile(content, mimeType, filename) {
+  const ext = filename ? filename.split('.').pop()?.toLowerCase() : '';
+
+  let result;
+
+  // PDF
+  if (mimeType === 'application/pdf' || ext === 'pdf') {
+    result = await parsePDF(content);
+  } else {
+    // Конвертируем Buffer в строку для текстовых форматов
+    const textContent = Buffer.isBuffer(content) ? content.toString('utf-8') : content;
+
+    // JSON
+    if (mimeType === 'application/json' || ext === 'json') {
+      result = await parseJSON(textContent);
+    }
+    // YAML
+    else if (mimeType === 'application/x-yaml' || mimeType === 'text/yaml' ||
+        ext === 'yaml' || ext === 'yml') {
+      result = await parseYAML(textContent);
+    }
+    // Текстовые файлы (txt, md, html, etc.)
+    else {
+      result = parseText(textContent, filename);
+    }
+  }
+
+  // Вычисляем хеш содержимого для дедупликации в векторном хранилище
+  result.docHash = createHash('sha256').update(result.rawText).digest('hex');
+  return result;
+}
+
+/**
+ * Парсинг JSON файла. Пытается определить OpenAPI спеку.
+ */
+async function parseJSON(content) {
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (e) {
+    return {
+      rawText: content,
+      isOpenAPI: false,
+      endpoints: [],
+      sourceType: 'text',
+    };
+  }
+
+  // Проверяем, является ли это OpenAPI спекой
+  if (isOpenAPISpec(parsed)) {
+    return parseOpenAPISpec(parsed);
+  }
+
+  return {
+    rawText: JSON.stringify(parsed, null, 2),
+    isOpenAPI: false,
+    endpoints: [],
+    sourceType: 'json',
+  };
+}
+
+/**
+ * Парсинг YAML файла. Пытается определить OpenAPI спеку.
+ */
+async function parseYAML(content) {
+  let parsed;
+  try {
+    parsed = yaml.load(content);
+  } catch (e) {
+    return {
+      rawText: content,
+      isOpenAPI: false,
+      endpoints: [],
+      sourceType: 'text',
+    };
+  }
+
+  if (isOpenAPISpec(parsed)) {
+    return parseOpenAPISpec(parsed);
+  }
+
+  return {
+    rawText: typeof parsed === 'object' ? JSON.stringify(parsed, null, 2) : String(parsed),
+    isOpenAPI: false,
+    endpoints: [],
+    sourceType: 'yaml',
+  };
+}
+
+/**
+ * Парсинг PDF файла — извлечение текста
+ */
+async function parsePDF(buffer) {
+  // pdfjs-dist (используемый pdf-parse v2) требует DOMMatrix при загрузке модуля.
+  // В Node.js его нет — подставляем минимальный полифил до импорта.
+  if (typeof globalThis.DOMMatrix === 'undefined') {
+    globalThis.DOMMatrix = class DOMMatrix {
+      constructor(init) {
+        const values = new Float64Array(16);
+        values[0] = values[5] = values[10] = values[15] = 1;
+        if (Array.isArray(init)) {
+          for (let i = 0; i < Math.min(init.length, 16); i++) values[i] = init[i];
+        }
+        this.a = values[0]; this.b = values[1]; this.c = values[4]; this.d = values[5];
+        this.e = values[12]; this.f = values[13];
+      }
+      isIdentity = true;
+      is2D = true;
+    };
+  }
+  const { PDFParse } = await import('pdf-parse');
+  const uint8 = new Uint8Array(Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer));
+  const pdf = new PDFParse(uint8);
+  await pdf.load();
+  const result = await pdf.getText();
+  return {
+    rawText: result.text,
+    isOpenAPI: false,
+    endpoints: [],
+    sourceType: 'pdf',
+  };
+}
+
+/**
+ * Парсинг текстового файла
+ */
+function parseText(content, filename) {
+  return {
+    rawText: content,
+    isOpenAPI: false,
+    endpoints: [],
+    sourceType: 'text',
+  };
+}
+
+/**
+ * Проверяет, является ли объект OpenAPI спекой
+ */
+function isOpenAPISpec(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  return !!(obj.openapi || obj.swagger);
+}
+
+/**
+ * Парсинг OpenAPI спецификации — извлечение эндпоинтов
+ */
+async function parseOpenAPISpec(spec) {
+  let dereferenced;
+  try {
+    dereferenced = await SwaggerParser.dereference(structuredClone(spec));
+  } catch (e) {
+    // Если не удалось разыменовать, работаем с оригиналом
+    dereferenced = spec;
+  }
+
+  const endpoints = [];
+  const paths = dereferenced.paths || {};
+
+  for (const [path, methods] of Object.entries(paths)) {
+    if (!methods || typeof methods !== 'object') continue;
+
+    for (const [method, operation] of Object.entries(methods)) {
+      if (['get', 'post', 'put', 'patch', 'delete'].indexOf(method) === -1) continue;
+      if (!operation || typeof operation !== 'object') continue;
+
+      const endpoint = {
+        path,
+        method: method.toUpperCase(),
+        summary: operation.summary || '',
+        description: operation.description || '',
+        operationId: operation.operationId || '',
+        parameters: extractParameters(operation),
+        requestBody: extractRequestBody(operation),
+        responseSchema: extractResponseSchema(operation),
+      };
+      endpoints.push(endpoint);
+    }
+  }
+
+  // Формируем текстовое представление
+  const info = dereferenced.info || {};
+  let rawText = `API: ${info.title || 'Unknown'}\n`;
+  rawText += `Version: ${info.version || 'Unknown'}\n`;
+  if (info.description) rawText += `Description: ${info.description}\n`;
+  rawText += `\nEndpoints (${endpoints.length}):\n\n`;
+
+  for (const ep of endpoints) {
+    rawText += `${ep.method} ${ep.path}`;
+    if (ep.summary) rawText += ` — ${ep.summary}`;
+    rawText += '\n';
+    if (ep.description) rawText += `  Description: ${ep.description}\n`;
+    if (ep.parameters.length > 0) {
+      rawText += `  Parameters:\n`;
+      for (const p of ep.parameters) {
+        rawText += `    - ${p.name} (${p.in}, ${p.type || 'string'}${p.required ? ', required' : ''}): ${p.description || ''}\n`;
+      }
+    }
+    if (ep.requestBody) {
+      rawText += `  Request Body:\n`;
+      rawText += `    ${JSON.stringify(ep.requestBody, null, 4).replace(/\n/g, '\n    ')}\n`;
+    }
+    if (ep.responseSchema) {
+      rawText += `  Response:\n`;
+      rawText += `    ${JSON.stringify(ep.responseSchema, null, 4).replace(/\n/g, '\n    ')}\n`;
+    }
+    rawText += '\n';
+  }
+
+  return {
+    rawText,
+    isOpenAPI: true,
+    endpoints,
+    sourceType: 'openapi',
+  };
+}
+
+/**
+ * Извлечение параметров из операции OpenAPI
+ */
+function extractParameters(operation) {
+  if (!operation.parameters) return [];
+  return operation.parameters.map(p => ({
+    name: p.name,
+    in: p.in,
+    required: !!p.required,
+    type: p.schema?.type || p.type || 'string',
+    description: p.description || '',
+    schema: p.schema || null,
+  }));
+}
+
+/**
+ * Извлечение request body из операции OpenAPI
+ */
+function extractRequestBody(operation) {
+  const body = operation.requestBody;
+  if (!body) return null;
+
+  const content = body.content || {};
+  const jsonContent = content['application/json'] || Object.values(content)[0];
+  if (!jsonContent?.schema) return null;
+
+  const simplified = simplifySchema(jsonContent.schema);
+
+  // Извлекаем примеры из examples (множественное) или example (единственное)
+  let example = null;
+  if (jsonContent.example) {
+    example = jsonContent.example;
+  } else if (jsonContent.examples && typeof jsonContent.examples === 'object') {
+    // Берём value из первого named example
+    const firstExample = Object.values(jsonContent.examples)[0];
+    if (firstExample?.value) {
+      example = firstExample.value;
+    }
+  }
+
+  if (example && typeof example === 'object') {
+    return { schema: simplified, example };
+  }
+
+  return simplified;
+}
+
+/**
+ * Извлечение response schema из операции OpenAPI
+ */
+function extractResponseSchema(operation) {
+  const responses = operation.responses || {};
+  // Берём успешный ответ (200, 201, или первый 2xx)
+  const successResponse = responses['200'] || responses['201'] ||
+    Object.entries(responses).find(([code]) => code.startsWith('2'))?.[1];
+
+  if (!successResponse) return null;
+
+  const content = successResponse.content || {};
+  const jsonContent = content['application/json'] || Object.values(content)[0];
+  if (!jsonContent?.schema) return null;
+
+  const simplified = simplifySchema(jsonContent.schema);
+
+  // Извлекаем примеры из examples (множественное) или example (единственное)
+  let example = null;
+  if (jsonContent.example) {
+    example = jsonContent.example;
+  } else if (jsonContent.examples && typeof jsonContent.examples === 'object') {
+    const firstExample = Object.values(jsonContent.examples)[0];
+    if (firstExample?.value) {
+      example = firstExample.value;
+    }
+  }
+
+  if (example && typeof example === 'object') {
+    return { schema: simplified, example };
+  }
+
+  return simplified;
+}
+
+/**
+ * Упрощает JSON Schema для более компактного представления.
+ * Рекурсивно раскрывает allOf/oneOf/anyOf до любого уровня вложенности.
+ */
+function simplifySchema(schema, depth = 0) {
+  if (!schema || depth > 10) return schema;
+
+  // allOf / oneOf / anyOf — рекурсивно мержим properties из ВСЕХ подсхем
+  if (schema.allOf || schema.oneOf || schema.anyOf) {
+    const subSchemas = schema.allOf || schema.oneOf || schema.anyOf;
+    const merged = {};
+    for (const sub of subSchemas) {
+      // Увеличиваем depth для каждой подсхемы!
+      const simplified = simplifySchema(sub, depth + 1);
+      if (typeof simplified === 'object' && !Array.isArray(simplified)) {
+        // Если результат — это объект с properties (например, { type: 'object', properties: {...} })
+        // извлекаем properties, а не мержим сам объект
+        if (simplified.properties && typeof simplified.properties === 'object') {
+          Object.assign(merged, simplified.properties);
+        } else if (!simplified.type && Object.keys(simplified).length > 0) {
+          // Это уже упрощённый результат { propName: description, ... }
+          Object.assign(merged, simplified);
+        }
+      }
+    }
+    // Также мержим properties из самой schema (если есть рядом с allOf)
+    if (schema.properties) {
+      for (const [key, prop] of Object.entries(schema.properties)) {
+        if (prop.allOf || prop.oneOf || prop.anyOf) {
+          merged[key] = simplifySchema(prop, depth + 1);
+        } else if (prop.type === 'object' && prop.properties) {
+          merged[key] = simplifySchema(prop, depth + 1);
+        } else if (prop.type === 'array' && prop.items) {
+          merged[key] = [simplifySchema(prop.items, depth + 1)];
+        } else {
+          let desc = prop.type || 'string';
+          if (prop.format) desc += ` (${prop.format})`;
+          if (prop.description) desc += ` — ${prop.description}`;
+          if (prop.enum) desc += ` [${prop.enum.join(', ')}]`;
+          if (prop.example !== undefined && prop.example !== null) desc += ` | example: ${prop.example}`;
+          merged[key] = desc;
+        }
+      }
+    }
+    return Object.keys(merged).length > 0 ? merged : (schema.type || 'object');
+  }
+
+  if (schema.type === 'object' && schema.properties) {
+    const result = {};
+    for (const [key, prop] of Object.entries(schema.properties)) {
+      if (prop.allOf || prop.oneOf || prop.anyOf) {
+        result[key] = simplifySchema(prop, depth + 1);
+      } else if (prop.type === 'object' && prop.properties) {
+        result[key] = simplifySchema(prop, depth + 1);
+      } else if (prop.type === 'array' && prop.items) {
+        result[key] = [simplifySchema(prop.items, depth + 1)];
+      } else {
+        let desc = prop.type || 'string';
+        if (prop.format) desc += ` (${prop.format})`;
+        if (prop.description) desc += ` — ${prop.description}`;
+        if (prop.enum) desc += ` [${prop.enum.join(', ')}]`;
+        if (prop.example !== undefined && prop.example !== null) desc += ` | example: ${prop.example}`;
+        result[key] = desc;
+      }
+    }
+    return result;
+  }
+
+  if (schema.type === 'array' && schema.items) {
+    return [simplifySchema(schema.items, depth + 1)];
+  }
+
+  return schema.type || schema;
+}
+
+/**
+ * Загрузка и парсинг документации по URL
+ * @param {string} url
+ * @returns {Promise<Object>}
+ */
+export async function parseURL(url) {
+  const response = await axios.get(url, {
+    timeout: 30000,
+    maxContentLength: 10 * 1024 * 1024, // 10MB
+    responseType: 'arraybuffer',
+  });
+
+  const contentType = response.headers['content-type'] || '';
+  const buffer = Buffer.from(response.data);
+
+  // Определяем имя файла из URL
+  const urlPath = new URL(url).pathname;
+  const filename = urlPath.split('/').pop() || 'document';
+
+  // Определяем MIME тип
+  let mimeType = contentType.split(';')[0].trim();
+  if (!mimeType || mimeType === 'application/octet-stream') {
+    // Пытаемся определить по расширению
+    const ext = filename.split('.').pop()?.toLowerCase();
+    if (ext === 'json') mimeType = 'application/json';
+    else if (ext === 'yaml' || ext === 'yml') mimeType = 'application/x-yaml';
+    else if (ext === 'pdf') mimeType = 'application/pdf';
+  }
+
+  return parseFile(buffer, mimeType, filename);
+}
