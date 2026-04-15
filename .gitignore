@@ -2,3 +2,4 @@
 .claude/
 node_modules/
 backend/data/
+nginx.conf
