@@ -79,16 +79,12 @@ export function rebuildRequestFields(fields, rowSections, currentRequest, pathTo
           value: `{{data.${code}}}`,
           valueType,
         },
-        children: [],
-        cfsMappings: [],
       });
     } else {
       newResponseFields.push({
         id: null,
         versionId: null,
         data: { key, code, isInArrayElement: hasPathToArray && !!(field.data?.isInArrayElement), formatCfg: null },
-        children: [],
-        cfsMappings: [],
       });
     }
   });
@@ -119,8 +115,6 @@ export function rebuildRequestFields(fields, rowSections, currentRequest, pathTo
           const formatCfg = childFormatCfgByPath.get(`${arrayKeyPath}.${childKey}`)
             ?? getFormatCfgForValueType(valueType);
           return {
-            children: [],
-            cfsMappings: [],
             data: {
               defaultValue: '',
               formatCfg,
@@ -131,7 +125,6 @@ export function rebuildRequestFields(fields, rowSections, currentRequest, pathTo
             },
           };
         }),
-        cfsMappings: [],
         data: {
           defaultValue: '',
           formatCfg: null,
@@ -157,10 +150,7 @@ export function rebuildRequestFields(fields, rowSections, currentRequest, pathTo
             isInArrayElement: false,
             formatCfg: null,
           },
-          children: [],
-          cfsMappings: [],
         })),
-        cfsMappings: [],
       });
     }
   });

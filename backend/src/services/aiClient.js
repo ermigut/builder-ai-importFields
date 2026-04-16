@@ -151,16 +151,12 @@ export function getInstructionPrompt(languages = ['en', 'ru']) {
 {
   "fields": [
     {
-      "id": <число или null>,
-      "versionId": <число или null>,
       "data": {
         "code": "<уникальный код параметра, например 'paramsmin'>",
         "valueType": <число: 1=строка, 2=число, 3=булево, и т.д.>,
         "required": <true/false>,
-        "isEditable": <true/false>,
-        "dateCreated": "<дата в формате 'YYYY-MM-DD HH:mm:ss' или текущая дата>"
+        "isEditable": <true/false>
       },
-      "enumId": <число или null>,
 ${fieldTitleLines},
       "hintEn": "<подсказка на английском или null>",
       "hintRu": "<подсказка на русском или null>"
@@ -168,8 +164,6 @@ ${fieldTitleLines},
   ],
   "rowSections": [
     {
-      "id": null,
-      "versionId": null,
       "data": {
         "code": "<уникальный код секции, например 'items'>",
         "customFieldsIsEditable": false,
@@ -178,21 +172,16 @@ ${fieldTitleLines},
 ${sectionTitleLines},
       "fields": [
         {
-          "id": null,
-          "versionId": null,
           "data": {
             "code": "<уникальный код поля секции, например 'items__name'>",
             "valueType": <число: 1=строка, 2=число, и т.д.>,
             "required": <true/false>,
-            "isEditable": <true/false>,
-            "dateCreated": "<дата в формате 'YYYY-MM-DD HH:mm:ss'>"
+            "isEditable": <true/false>
           },
-          "enumId": null,
 ${sectionFieldTitleLines},
           "hintEn": null
         }
-      ],
-      "customFieldsSetLinks": []
+      ]
     }
   ],
   "request": {
@@ -223,9 +212,7 @@ ${sectionFieldTitleLines},
           "formatCfg": {
             "valueType": <число>
           }
-        },
-        "children": [],
-        "cfsMappings": []
+        }
       }
     ],
     "headers": [],
@@ -240,23 +227,17 @@ ${sectionFieldTitleLines},
       },
       "fields": [
         {
-          "id": <число или null>,
-          "versionId": <число или null>,
           "data": {
             "key": "<путь к полю в ответе, например 'result.random.data'>",
             "code": "<код поля>",
             "isInArrayElement": false,
             "formatCfg": null
-          },
-          "children": [],
-          "cfsMappings": []
+          }
         }
       ],
       "headers": [],
-      "statusHandlers": [],
-      "cfsMappings": []
-    },
-    "cfsMappings": []
+      "statusHandlers": []
+    }
   }
 }
 
@@ -364,7 +345,7 @@ const FIELDS_BATCH_SIZE = 40;
  * Упрощённый промпт для генерации ТОЛЬКО fields[] и rowSections[] (без request).
  * Используется при батчинге больших JSON.
  */
-function getFieldsOnlyPrompt(languages) {
+export function getFieldsOnlyPrompt(languages) {
   const fieldTitleLines = languages
     .map(lang => `      "${langToTitleKey(lang)}": "<название на ${LANG_NAMES[lang] || lang}>"`)
     .join(',\n');
@@ -380,35 +361,25 @@ function getFieldsOnlyPrompt(languages) {
 {
   "fields": [
     {
-      "id": null,
-      "versionId": null,
       "data": {
         "code": "<код через __ вместо точек>",
         "valueType": <1=строка,2=int,3=decimal,5=datetime,8=date,9=bool,101=string[],102=int[]>,
         "required": false,
-        "isEditable": true,
-        "dateCreated": "<YYYY-MM-DD HH:mm:ss>"
+        "isEditable": true
       },
-      "enumId": null,
-${fieldTitleLines},
-      "hintEn": null,
-      "hintRu": null
+${fieldTitleLines}
     }
   ],
   "rowSections": [
     {
-      "id": null, "versionId": null,
       "data": { "code": "<код>", "customFieldsIsEditable": false, "customFieldsIsRequired": false },
 ${sectionTitleLines},
       "fields": [
         {
-          "id": null, "versionId": null,
-          "data": { "code": "<секция__поле>", "valueType": 1, "required": false, "isEditable": true, "dateCreated": "<YYYY-MM-DD HH:mm:ss>" },
-          "enumId": null,
+          "data": { "code": "<секция__поле>", "valueType": 1, "required": false, "isEditable": true },
 ${sectionFieldTitleLines}
         }
-      ],
-      "customFieldsSetLinks": []
+      ]
     }
   ]
 }
@@ -895,10 +866,8 @@ export async function generateTargetJson(sourceType, sourceValue, languages = ['
             rowSections: allRowSections,
             request: {
               data: { url: '', method: 1, format: 0, content: '', urlEncodeType: 0, filter: [], filterType: 2, preScript: '', postScript: '', apiDocUrl: '' },
-              authId: null, certificateId: null, paginationId: null, signatureId: null,
               fields: [], headers: [],
-              response: { data: { format: 0, pathToArray: null, filter: [], useRequestData: 0, preScript: '', postScript: '' }, fields: [], headers: [], statusHandlers: [], cfsMappings: [] },
-              cfsMappings: [],
+              response: { data: { format: 0, pathToArray: null, filter: [], useRequestData: 0, preScript: '', postScript: '' }, fields: [], headers: [], statusHandlers: [] },
             },
           };
         } else {
