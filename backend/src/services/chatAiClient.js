@@ -285,8 +285,8 @@ async function batchGenerateFromSchema(endpointSchema, languages, { signal, docC
       ? `РАЗРЕШЁННЫЕ КОДЫ для полей (используй ТОЛЬКО эти, точно как написано): ${regularKeys.join(', ')}`
       : '';
     const arrayCodesLine = arrayOfObjectKeys.length > 0
-      ? `МАССИВЫ ОБЪЕКТОВ → rowSections: ${arrayOfObjectKeys.join(', ')}`
-      : '';
+      ? `МАССИВЫ ОБЪЕКТОВ → rowSections (ТОЛЬКО эти коды): ${arrayOfObjectKeys.join(', ')}`
+      : 'НЕ создавай rowSections в этом батче — все коды являются обычными полями в fields[]. Вложенные объекты (с __ в коде) — это обычные поля, НЕ rowSections.';
     const constraintLines = [allowedCodesLine, arrayCodesLine].filter(Boolean).join('\n');
 
     const batchPrompt = `${endpointHeader}\nСхема полей (batch ${batchIndex}/${totalBatches}):\n${JSON.stringify(batchSchema, null, 2)}\n\n${constraintLines}\nВсе поля должны иметь isEditable: ${isEditableStr}\n\n${getFieldsOnlyPrompt(languages)}`;
@@ -314,7 +314,9 @@ async function batchGenerateFromSchema(endpointSchema, languages, { signal, docC
 
   // Мержим результаты
   const allFields = batchResults.flatMap(r => r.fields || []);
-  const allRowSections = batchResults.flatMap(r => r.rowSections || []);
+  // Фильтруем пустые rowSections (AI иногда создаёт rowSection для вложенных объектов вместо плоских полей)
+  const allRowSections = batchResults.flatMap(r => r.rowSections || [])
+    .filter(s => s.fields && s.fields.length > 0);
 
   // Дедупликация по кодам
   const seenCodes = new Set();
