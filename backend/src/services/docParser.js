@@ -329,6 +329,27 @@ function extractResponseSchema(operation) {
 }
 
 /**
+ * Deep-merge для упрощённых схем.
+ * При oneOf/allOf варианты могут содержать одноимённые вложенные объекты
+ * (например traits у Known User и Anonymous User) — нужно объединять свойства,
+ * а не перезаписывать весь объект.
+ */
+function deepMergeSimplified(target, source) {
+  for (const [key, value] of Object.entries(source)) {
+    if (
+      typeof value === 'object' && value !== null && !Array.isArray(value) &&
+      typeof target[key] === 'object' && target[key] !== null && !Array.isArray(target[key])
+    ) {
+      // Оба — вложенные объекты: мержим рекурсивно
+      deepMergeSimplified(target[key], value);
+    } else {
+      // Примитив, массив, или ключ отсутствует — просто присваиваем
+      target[key] = value;
+    }
+  }
+}
+
+/**
  * Упрощает JSON Schema для более компактного представления.
  * Рекурсивно раскрывает allOf/oneOf/anyOf до любого уровня вложенности.
  */
@@ -343,13 +364,11 @@ function simplifySchema(schema, depth = 0) {
       // Увеличиваем depth для каждой подсхемы!
       const simplified = simplifySchema(sub, depth + 1);
       if (typeof simplified === 'object' && !Array.isArray(simplified)) {
-        // Если результат — это объект с properties (например, { type: 'object', properties: {...} })
-        // извлекаем properties, а не мержим сам объект
-        if (simplified.properties && typeof simplified.properties === 'object') {
-          Object.assign(merged, simplified.properties);
-        } else if (!simplified.type && Object.keys(simplified).length > 0) {
-          // Это уже упрощённый результат { propName: description, ... }
-          Object.assign(merged, simplified);
+        // simplifySchema всегда возвращает "плоский" словарь { propName: description, ... }
+        // Используем deep-merge чтобы при oneOf не затирать вложенные объекты
+        // (например, Known User.traits{4 props} + Anonymous User.traits{2 props} → объединение)
+        if (Object.keys(simplified).length > 0) {
+          deepMergeSimplified(merged, simplified);
         }
       }
     }
