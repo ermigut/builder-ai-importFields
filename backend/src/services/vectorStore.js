@@ -147,6 +147,32 @@ export async function getIntroChunks(docHash, maxIndex = 1) {
 }
 
 /**
+ * Получает все чанки, принадлежащие конкретному эндпоинту.
+ * Используется для подтягивания всех связанных фрагментов разбитого эндпоинта.
+ * @param {string} docHash - фильтр по документу
+ * @param {string} endpointName - имя эндпоинта (например "POST /users/{userId}/meetings")
+ * @returns {Promise<Array<{text: string, endpoint: string, sectionTitle: string, chunkIndex: number}>>}
+ */
+export async function getEndpointChunks(docHash, endpointName) {
+  if (!table || !endpointName) return [];
+  try {
+    const results = await table.query()
+      .where(`docHash = '${docHash}' AND endpoint = '${endpointName}'`)
+      .toArray();
+    return results
+      .sort((a, b) => a.chunkIndex - b.chunkIndex)
+      .map(r => ({
+        text: r.text,
+        endpoint: r.endpoint || '',
+        sectionTitle: r.sectionTitle || '',
+        chunkIndex: r.chunkIndex,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Удаляет все чанки документа
  * @param {string} docHash
  */

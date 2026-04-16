@@ -14,7 +14,7 @@ import { createSession, getSession, addMessage, setLastResult, deleteSession } f
 import { sendChatMessage } from '../services/chatAiClient.js';
 import { chunkDocument, splitLargeChunks } from '../services/documentChunker.js';
 import { embedText, embedBatch } from '../services/embeddingClient.js';
-import { hasDocument, upsertChunks, searchChunks, getIntroChunks } from '../services/vectorStore.js';
+import { hasDocument, upsertChunks, searchChunks, getIntroChunks, getEndpointChunks } from '../services/vectorStore.js';
 import { logAiOperation } from '../middleware/logger.js';
 
 const router = Router();
@@ -247,6 +247,30 @@ function detectEndpointFromQuery(message, endpoints) {
       }
     }
 
+    // Бонус за совпадение в summary (высокий приоритет — это "человеческое" название метода)
+    // "Create Meeting" должен предпочесть summary "Create a meeting" а не "Create a recording registrant"
+    if (ep.summary) {
+      const summaryLower = ep.summary.toLowerCase();
+      let summaryMatches = 0;
+      for (const word of expandedWordsArr) {
+        if (summaryLower.includes(word)) {
+          score += 3;
+          summaryMatches++;
+        }
+      }
+      // Бонус за совпадение ВСЕХ слов запроса в summary (точное попадание)
+      if (summaryMatches >= expandedWordsArr.length && expandedWordsArr.length >= 2) {
+        score += 10;
+      }
+      // Штраф за лишние слова в summary, которых нет в запросе
+      // "Create a recording registrant" имеет "recording", "registrant" — лишние
+      const summaryWords = summaryLower.split(/[\s,;.!?]+/).filter(w => w.length > 2);
+      const extraWords = summaryWords.filter(w =>
+        !expandedWordsArr.some(qw => w.includes(qw) || qw.includes(w)) && !['a', 'an', 'the', 'of', 'for', 'to', 'by', 'in', 'on'].includes(w)
+      );
+      score -= extraWords.length * 2;
+    }
+
     // Бонус за совпадение в operationId (высокий приоритет)
     if (ep.operationId) {
       const opIdLower = ep.operationId.toLowerCase();
@@ -266,6 +290,13 @@ function detectEndpointFromQuery(message, endpoints) {
         }
       }
     }
+
+    // Штраф за лишние path-сегменты без совпадения (длинный путь = менее точный эндпоинт)
+    const unmatchedSegments = pathSegments.filter(seg => {
+      const segLower = seg.toLowerCase();
+      return !expandedWordsArr.some(w => segLower.includes(w) || w.includes(segLower));
+    });
+    score -= unmatchedSegments.length * 2;
 
     // Для POST: предпочитаем базовые эндпоинты (без path params)
     // POST /tasks лучше чем POST /tasks/{gid}/duplicate
@@ -319,7 +350,7 @@ router.post('/message', async (req, res, next) => {
 
     // Определяем тип запроса для выбора количества чанков
     const lowerMsg = message.toLowerCase();
-    const isFieldGeneration = /сгенерируй|генерируй|генерация|создай поля|обработай|поля для|fields for|generate|create fields|post |put |patch |delete |get |post\/|put\/|patch\/|добавить|добавлен|создать|создан|обновить|обновлен|удалить|удален|add-|create-|update-|edit-/.test(lowerMsg);
+    let isFieldGeneration = /сгенерируй|генерируй|генерация|создай поля|обработай|поля для|fields for|generate|create fields|post |put |patch |delete |get |post\/|put\/|patch\/|добавить|добавлен|создать|создан|обновить|обновлен|удалить|удален|add-|create-|update-|edit-/.test(lowerMsg);
     const isBroadQuery = /какие|список|все |all |list|methods|эндпоинт|endpoint|перечисл|обзор|overview/.test(lowerMsg);
 
     // RAG с разным topK:
@@ -327,24 +358,27 @@ router.post('/message', async (req, res, next) => {
     // - Широкие вопросы ("какие методы"): 15 чанков
     // - Обычные вопросы: 8 чанков
     let ragChunks = null;
+    let detectedEndpointSchema = null; // Для батчинга больших схем в chatAiClient
     if (session.useRag && session.docHash) {
       try {
-        const topK = isFieldGeneration ? 40 : isBroadQuery ? 15 : 8;
-
-        const queryVector = await embedText(message);
-        const searchResults = await searchChunks(session.docHash, queryVector, topK);
-
-        // Пытаемся определить конкретный эндпоинт из запроса
+        // Пытаемся определить конкретный эндпоинт из запроса ДО вычисления topK,
+        // потому что пользователь может написать просто имя метода (например "Create Meeting")
+        // без ключевых слов генерации — и тогда это тоже запрос на генерацию полей.
         let detectedEndpoint = null;
-        if (isFieldGeneration && session.docContent?.endpoints?.length > 0) {
+        if (session.docContent?.endpoints?.length > 0) {
           detectedEndpoint = detectEndpointFromQuery(message, session.docContent.endpoints);
           if (detectedEndpoint) {
+            isFieldGeneration = true;
             logAiOperation('Message: обнаружен эндпоинт', {
               endpoint: `${detectedEndpoint.method} ${detectedEndpoint.path}`,
               summary: detectedEndpoint.summary,
             });
           }
         }
+
+        const topK = isFieldGeneration ? 40 : isBroadQuery ? 15 : 8;
+        const queryVector = await embedText(message);
+        const searchResults = await searchChunks(session.docHash, queryVector, topK);
 
         // Всегда включаем вводные чанки (базовый URL, авторизация, общие правила).
         // introChunkIndex определяется при загрузке (чанк с URL-паттерном или "Общая информация").
@@ -353,15 +387,22 @@ router.post('/message', async (req, res, next) => {
         const searchIds = new Set(searchResults.map(c => c.chunkIndex));
         const uniqueIntro = intro.filter(c => !searchIds.has(c.chunkIndex));
 
-        // Если нашли конкретный эндпоинт — добавляем его полный контекст
+        // Если нашли конкретный эндпоинт — добавляем его контекст
+        // Для POST/PUT/PATCH: только requestBody (не грузим AI лишним response ~29K символов)
+        // Для GET: только responseSchema (это основной источник полей)
         let endpointContextChunks = [];
+        // detectedEndpointSchema определена выше, за пределами try
         if (detectedEndpoint && session.docContent?.isOpenAPI) {
           const allEndpoints = session.docContent.endpoints;
           const matchedEp = allEndpoints.find(ep =>
             ep.method === detectedEndpoint.method && ep.path === detectedEndpoint.path
           );
           if (matchedEp) {
-            // Формируем полный контекст эндпоинта: method + path + summary + description + parameters + requestBody + responseSchema
+            const isWriteMethod = ['POST', 'PUT', 'PATCH'].includes(matchedEp.method);
+            // Выбираем релевантную схему: requestBody для записи, response для чтения
+            const primarySchema = isWriteMethod ? matchedEp.requestBody : matchedEp.responseSchema;
+            const secondarySchema = isWriteMethod ? matchedEp.responseSchema : matchedEp.requestBody;
+
             let endpointText = `${matchedEp.method} ${matchedEp.path}`;
             if (matchedEp.summary) endpointText += ` — ${matchedEp.summary}`;
             endpointText += '\n';
@@ -372,11 +413,17 @@ router.post('/message', async (req, res, next) => {
                 endpointText += `  - ${p.name} (${p.in}, ${p.type || 'string'}${p.required ? ', required' : ''}): ${p.description || ''}\n`;
               }
             }
-            if (matchedEp.requestBody) {
-              endpointText += `Request Body:\n  ${JSON.stringify(matchedEp.requestBody, null, 2).replace(/\n/g, '\n  ')}\n`;
+            if (primarySchema) {
+              const label = isWriteMethod ? 'Request Body' : 'Response';
+              endpointText += `${label}:\n  ${JSON.stringify(primarySchema, null, 2).replace(/\n/g, '\n  ')}\n`;
             }
-            if (matchedEp.responseSchema) {
-              endpointText += `Response:\n  ${JSON.stringify(matchedEp.responseSchema, null, 2).replace(/\n/g, '\n  ')}\n`;
+            // Вторичную схему включаем только если она небольшая (<5000 символов)
+            if (secondarySchema) {
+              const secondaryJson = JSON.stringify(secondarySchema, null, 2);
+              if (secondaryJson.length < 5000) {
+                const label = isWriteMethod ? 'Response' : 'Request Body';
+                endpointText += `${label}:\n  ${secondaryJson.replace(/\n/g, '\n  ')}\n`;
+              }
             }
 
             endpointContextChunks = [{
@@ -385,6 +432,33 @@ router.post('/message', async (req, res, next) => {
               sectionTitle: matchedEp.summary || '',
               chunkIndex: -1, // Специальный чанк, не из векторного поиска
             }];
+
+            // Сохраняем схему для батчинга в chatAiClient
+            if (primarySchema && isFieldGeneration) {
+              detectedEndpointSchema = {
+                method: matchedEp.method,
+                path: matchedEp.path,
+                summary: matchedEp.summary || '',
+                schema: primarySchema,
+                parameters: matchedEp.parameters || [],
+              };
+            }
+          }
+        }
+
+        // Подтягиваем все связанные фрагменты эндпоинта из векторного хранилища
+        if (detectedEndpoint) {
+          const endpointName = `${detectedEndpoint.method} ${detectedEndpoint.path}`;
+          const relatedChunks = await getEndpointChunks(session.docHash, endpointName);
+          if (relatedChunks.length > 0) {
+            const existingIds = new Set([...searchResults.map(c => c.chunkIndex), ...uniqueIntro.map(c => c.chunkIndex)]);
+            const newRelated = relatedChunks.filter(c => !existingIds.has(c.chunkIndex));
+            searchResults.push(...newRelated);
+            logAiOperation('Message: добавлены связанные чанки эндпоинта', {
+              endpoint: endpointName,
+              relatedTotal: relatedChunks.length,
+              newAdded: newRelated.length,
+            });
           }
         }
 
@@ -403,8 +477,8 @@ router.post('/message', async (req, res, next) => {
       }
     }
 
-    // Отправляем в AI
-    const result = await sendChatMessage(session, message, languages, { ragChunks, considerArrayPath: !!considerArrayPath });
+    // Отправляем в AI (detectedEndpointSchema передаётся для батчинга больших схем)
+    const result = await sendChatMessage(session, message, languages, { ragChunks, considerArrayPath: !!considerArrayPath, detectedEndpointSchema });
 
     // Добавляем ответ AI в историю
     addMessage(sessionId, 'assistant', result.text || JSON.stringify({ fields: result.fields, rowSections: result.rowSections }));

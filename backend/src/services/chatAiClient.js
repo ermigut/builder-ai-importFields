@@ -7,11 +7,12 @@
  * 2. Генерация полей — AI возвращает JSON { fields, rowSections } по запросу пользователя
  */
 
-import { getOpenAIClient, getInstructionPrompt, detectCommonDateFormatFromText } from './aiClient.js';
+import { getOpenAIClient, getInstructionPrompt, getFieldsOnlyPrompt, generateJsonFromPrompt, detectCommonDateFormatFromText } from './aiClient.js';
 import { logAiOperation } from '../middleware/logger.js';
 
 const MODEL = 'gpt-4o-mini';
 const MAX_DOC_CHARS = 80000; // Макс. длина контекста документации
+const CHAT_BATCH_SIZE = 40; // Макс. листовых полей до батчинга (аналог FIELDS_BATCH_SIZE в aiClient)
 
 /**
  * Извлекает информацию о базовом URL API из текста документации.
@@ -182,6 +183,231 @@ ${chunksText}
 }
 
 /**
+ * Подсчитывает количество листовых свойств в упрощённой схеме (результат simplifySchema).
+ * Рекурсивно считает конечные поля, не включая промежуточные объекты.
+ * @param {any} schema - Упрощённая схема
+ * @param {number} depth - Текущая глубина (защита от бесконечной рекурсии)
+ * @returns {number}
+ */
+function countSchemaLeaves(schema, depth = 0) {
+  if (!schema || typeof schema !== 'object' || depth > 15) return 0;
+  if (Array.isArray(schema)) {
+    return schema.length > 0 ? countSchemaLeaves(schema[0], depth + 1) : 0;
+  }
+  let count = 0;
+  for (const [, value] of Object.entries(schema)) {
+    if (typeof value === 'string') {
+      count++;
+    } else if (Array.isArray(value)) {
+      count++; // Массив считается как одно rowSection-поле
+    } else if (typeof value === 'object' && value !== null) {
+      count += countSchemaLeaves(value, depth + 1);
+    }
+  }
+  return count;
+}
+
+/**
+ * Рекурсивно уплощает упрощённую схему в плоский словарь {code: value}.
+ * Аналог flattenJsonForBatch из aiClient.js, но для упрощённых схем (simplifySchema output).
+ * @param {Object} schema - Упрощённая схема
+ * @param {string} prefix - Накопленный префикс через "__"
+ * @returns {Object} - {code: value}
+ */
+function flattenSchemaForBatch(schema, prefix = '') {
+  const result = {};
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return result;
+  for (const [key, value] of Object.entries(schema)) {
+    const sanitizedKey = key.replace(/[ -]/g, '_');
+    const code = prefix ? `${prefix}__${sanitizedKey}` : sanitizedKey;
+    if (typeof value === 'string') {
+      result[code] = value;
+    } else if (Array.isArray(value)) {
+      // Массив объектов — оставляем как лист (AI сделает rowSection)
+      result[code] = value;
+    } else if (typeof value === 'object' && value !== null) {
+      Object.assign(result, flattenSchemaForBatch(value, code));
+    }
+  }
+  return result;
+}
+
+/**
+ * Батч-генерация полей для больших схем эндпоинтов.
+ * Разбивает схему на батчи по CHAT_BATCH_SIZE, отправляет параллельно, мержит результаты.
+ * @param {Object} endpointSchema - {method, path, summary, schema, parameters}
+ * @param {string[]} languages
+ * @param {Object} options
+ * @returns {Promise<{text: string, fields: Array, rowSections: Array, request: Object|null}>}
+ */
+async function batchGenerateFromSchema(endpointSchema, languages, { signal, docContent } = {}) {
+  const { method, path, summary, schema, parameters } = endpointSchema;
+  const flatSchema = flattenSchemaForBatch(schema);
+  const allKeys = Object.keys(flatSchema);
+  const totalBatches = Math.ceil(allKeys.length / CHAT_BATCH_SIZE);
+
+  logAiOperation('Chat batch: старт', {
+    endpoint: `${method} ${path}`,
+    totalLeaves: allKeys.length,
+    batches: totalBatches,
+  });
+
+  // Формируем заголовок эндпоинта (общий для всех батчей)
+  let endpointHeader = `API Endpoint: ${method} ${path}`;
+  if (summary) endpointHeader += ` — ${summary}`;
+  endpointHeader += '\n';
+  if (parameters?.length > 0) {
+    endpointHeader += 'Parameters:\n';
+    for (const p of parameters) {
+      endpointHeader += `  - ${p.name} (${p.in}, ${p.type || 'string'}${p.required ? ', required' : ''}): ${p.description || ''}\n`;
+    }
+  }
+
+  const isWriteMethod = ['POST', 'PUT', 'PATCH'].includes(method);
+  const isEditableStr = isWriteMethod ? 'true' : 'false';
+
+  // Формируем батчи
+  const batches = [];
+  for (let i = 0; i < allKeys.length; i += CHAT_BATCH_SIZE) {
+    const batchIndex = Math.floor(i / CHAT_BATCH_SIZE) + 1;
+    const batchKeys = allKeys.slice(i, i + CHAT_BATCH_SIZE);
+    const batchSchema = {};
+    batchKeys.forEach(k => { batchSchema[k] = flatSchema[k]; });
+
+    // Разделяем: обычные поля vs массивы объектов (rowSections)
+    const arrayOfObjectKeys = batchKeys.filter(k => {
+      const v = flatSchema[k];
+      return Array.isArray(v) && v.length > 0 && typeof v[0] === 'object' && v[0] !== null;
+    });
+    const regularKeys = batchKeys.filter(k => !arrayOfObjectKeys.includes(k));
+
+    const allowedCodesLine = regularKeys.length > 0
+      ? `РАЗРЕШЁННЫЕ КОДЫ для полей (используй ТОЛЬКО эти, точно как написано): ${regularKeys.join(', ')}`
+      : '';
+    const arrayCodesLine = arrayOfObjectKeys.length > 0
+      ? `МАССИВЫ ОБЪЕКТОВ → rowSections: ${arrayOfObjectKeys.join(', ')}`
+      : '';
+    const constraintLines = [allowedCodesLine, arrayCodesLine].filter(Boolean).join('\n');
+
+    const batchPrompt = `${endpointHeader}\nСхема полей (batch ${batchIndex}/${totalBatches}):\n${JSON.stringify(batchSchema, null, 2)}\n\n${constraintLines}\nВсе поля должны иметь isEditable: ${isEditableStr}\n\n${getFieldsOnlyPrompt(languages)}`;
+
+    batches.push({ batchIndex, batchPrompt });
+  }
+
+  // Параллельная генерация
+  const batchResults = await Promise.all(
+    batches.map(({ batchIndex, batchPrompt }) =>
+      generateJsonFromPrompt(batchPrompt, MODEL, { signal })
+        .then(res => {
+          logAiOperation(`Chat batch ${batchIndex}/${totalBatches}`, {
+            fields: res.fields?.length || 0,
+            rowSections: res.rowSections?.length || 0,
+          });
+          return res;
+        })
+        .catch(e => {
+          logAiOperation(`Chat batch ${batchIndex}/${totalBatches} ошибка`, { error: e.message });
+          return { fields: [], rowSections: [] };
+        })
+    )
+  );
+
+  // Мержим результаты
+  const allFields = batchResults.flatMap(r => r.fields || []);
+  const allRowSections = batchResults.flatMap(r => r.rowSections || []);
+
+  // Дедупликация по кодам
+  const seenCodes = new Set();
+  const dedupedFields = allFields.filter(f => {
+    const code = f.data?.code;
+    if (!code || seenCodes.has(code)) return false;
+    seenCodes.add(code);
+    return true;
+  });
+
+  logAiOperation('Chat batch: результат', {
+    endpoint: `${method} ${path}`,
+    totalFields: dedupedFields.length,
+    totalRowSections: allRowSections.length,
+    duplicatesRemoved: allFields.length - dedupedFields.length,
+  });
+
+  // Строим request из метаданных эндпоинта
+  const methodMap = { GET: 0, POST: 1, PUT: 2, DELETE: 3, PATCH: 4 };
+  const methodNum = methodMap[method] ?? 1;
+
+  // Извлекаем baseUrl из docContent (установлен в docParser при парсинге OpenAPI)
+  const baseUrl = docContent?.baseUrl || '';
+  const fullUrl = baseUrl ? `${baseUrl}${path}` : path;
+
+  // Формируем request.fields из сгенерированных полей (маппинг code → key)
+  const requestFields = dedupedFields.map(f => {
+    const code = f.data?.code;
+    if (!code) return null;
+    const key = code.replace(/__/g, '.');
+    const field = {
+      data: {
+        key,
+        value: `{{data.${code}}}`,
+        valueType: f.data?.valueType || 1,
+        required: f.data?.required || false,
+        defaultValue: '',
+        formatCfg: f.data?.valueType === 5 ? { format: 'Y-m-d\\TH:i:s\\Z', timezone: '+0000', valueType: 1 }
+          : f.data?.valueType === 8 ? { format: 'Y-m-d', timezone: '+0000', valueType: 1 }
+          : { valueType: f.data?.valueType || 1 },
+      },
+    };
+    return field;
+  }).filter(Boolean);
+
+  // Формируем request.fields для rowSections
+  for (const section of allRowSections) {
+    const sectionCode = section.data?.code;
+    if (!sectionCode) continue;
+    const parentKey = sectionCode.replace(/__/g, '.');
+    const children = (section.fields || []).map(f => {
+      const code = f.data?.code;
+      if (!code) return null;
+      const childKey = code.replace(/__/g, '.').replace(new RegExp(`^${parentKey}\\.`), '');
+      return {
+        data: {
+          key: childKey,
+          value: `{{data.${code}}}`,
+          valueType: f.data?.valueType || 1,
+          required: f.data?.required || false,
+          defaultValue: '',
+          formatCfg: { valueType: f.data?.valueType || 1 },
+        },
+      };
+    }).filter(Boolean);
+
+    requestFields.push({
+      data: {
+        key: parentKey,
+        value: '',
+        valueType: 99,
+        required: false,
+        defaultValue: '',
+        formatCfg: { valueType: 99 },
+      },
+      children,
+    });
+  }
+
+  return {
+    text: 'Поля сгенерированы.',
+    fields: dedupedFields,
+    rowSections: allRowSections,
+    request: {
+      data: { url: fullUrl, method: methodNum, format: 0, content: '', urlEncodeType: 0, filter: [], filterType: 2, preScript: '', postScript: '', apiDocUrl: '' },
+      fields: requestFields,
+      headers: [],
+      response: { data: { format: 0, pathToArray: null, filter: [], useRequestData: 0, preScript: '', postScript: '' }, fields: [], headers: [], statusHandlers: [] },
+    },
+  };
+}
+
+/**
  * Отправляет сообщение в AI-чат и возвращает ответ
  * @param {Object} session - Сессия из chatSessionStore
  * @param {string} userMessage - Сообщение пользователя
@@ -190,10 +416,26 @@ ${chunksText}
  * @param {AbortSignal} [options.signal] - Сигнал отмены
  * @returns {Promise<{text: string, fields: Array|null, rowSections: Array|null}>}
  */
-export async function sendChatMessage(session, userMessage, languages = ['en'], { signal, ragChunks, considerArrayPath = false } = {}) {
+export async function sendChatMessage(session, userMessage, languages = ['en'], { signal, ragChunks, considerArrayPath = false, detectedEndpointSchema = null } = {}) {
   const openai = getOpenAIClient();
   if (!openai) {
     throw new Error('OpenAI API ключ не настроен. Установите переменную окружения OPENAI_API_KEY.');
+  }
+
+  // Батч-генерация: если передана большая схема эндпоинта (>CHAT_BATCH_SIZE листовых полей),
+  // разбиваем на параллельные батчи вместо одного большого запроса
+  if (detectedEndpointSchema) {
+    const leafCount = countSchemaLeaves(detectedEndpointSchema.schema);
+    if (leafCount > CHAT_BATCH_SIZE) {
+      logAiOperation('Chat: переключение на батч-генерацию', {
+        endpoint: `${detectedEndpointSchema.method} ${detectedEndpointSchema.path}`,
+        leafCount,
+        batchSize: CHAT_BATCH_SIZE,
+      });
+      const batchResult = await batchGenerateFromSchema(detectedEndpointSchema, languages, { signal, docContent: session.docContent });
+      ensureRequestFieldsFormatCfg(batchResult, session.docContent?.rawText);
+      return batchResult;
+    }
   }
 
   // RAG-режим: используем только релевантные чанки вместо полного документа
@@ -434,8 +676,6 @@ function ensureRequestFieldsFormatCfg(parsed, rawText) {
         defaultValue: '',
         formatCfg: { ...formatCfg },
       },
-      children: [],
-      cfsMappings: [],
     });
     added++;
   }

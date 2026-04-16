@@ -203,10 +203,15 @@ async function parseOpenAPISpec(spec) {
     }
   }
 
+  // Извлекаем базовый URL из servers
+  const servers = dereferenced.servers || spec.servers || [];
+  const baseUrl = (servers[0]?.url || '').replace(/\/$/, '');
+
   // Формируем текстовое представление
   const info = dereferenced.info || {};
   let rawText = `API: ${info.title || 'Unknown'}\n`;
   rawText += `Version: ${info.version || 'Unknown'}\n`;
+  if (baseUrl) rawText += `Base URL: ${baseUrl}\n`;
   if (info.description) rawText += `Description: ${info.description}\n`;
   rawText += `\nEndpoints (${endpoints.length}):\n\n`;
 
@@ -237,6 +242,7 @@ async function parseOpenAPISpec(spec) {
     isOpenAPI: true,
     endpoints,
     sourceType: 'openapi',
+    baseUrl: baseUrl || null,
   };
 }
 
