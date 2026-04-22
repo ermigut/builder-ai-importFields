@@ -3,3 +3,4 @@
 node_modules/
 backend/data/
 nginx.conf
+start.bat

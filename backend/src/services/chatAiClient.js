@@ -147,6 +147,7 @@ ${docText}
 - Анализируй разделы "Request parameters", "Body Params", "Response" и т.д.
 - Значение null в теле запроса — это заменитель переменной шаблона (например {{variable}}), поле реальное и его надо включать
 - Вложенные объекты (например context, properties, app, device, user и т.д.) — всегда разворачивай рекурсивно, создавая поля для каждого листового свойства
+- Если объект содержит И вложенный объект, И скалярные поля рядом — включай ВСЕ поля. Пример: {"data": {"type": "agent_rule", "attributes": {"name": "..."}}} → включай И data__type, И data__attributes__name. Нельзя пропускать скалярные поля (type, id и т.д.) только потому, что рядом есть вложенный объект attributes.
 - Массивы объектов (на любом уровне вложенности) → rowSections. НО: если объект содержит И массив, И плоские поля рядом — плоские поля ТОЖЕ включай в fields. Пример: {"properties": {"contents": [...], "currency": "USD", "value": 10}} → fields содержит properties__currency, properties__value, а rowSections содержит секцию properties__contents с её подполями. Нельзя пропускать плоские поля только потому, что рядом есть массив.
 - Пустые массивы [] и объекты {} (без ключей) — не обрабатывай; объекты с ключами — обрабатывай всегда
 - Кастомные поля (customFields, cfs и т.д.) — игнорируй`;
@@ -226,6 +227,7 @@ ${chunksText}
 - Если пользователь просит список методов — используй список эндпоинтов выше
 - При генерации полей ВСЕГДА анализируй структуру "Request Body" — это ключевой источник полей для создания/обновления
 - Вложенные объекты (например context, properties, app, device, user, ad и т.д.) — ОБЯЗАТЕЛЬНО разворачивай рекурсивно, создавая поля для каждого листового свойства
+- Если объект содержит И вложенный объект, И скалярные поля рядом — включай ВСЕ поля. Пример: {"data": {"type": "agent_rule", "attributes": {"name": "..."}}} → включай И data__type, И data__attributes__name. Нельзя пропускать скалярные поля (type, id и т.д.) только потому, что рядом есть вложенный объект attributes.
 - Значение null в теле запроса — заменитель переменной-шаблона ({{variable}}), поле реальное и его надо включать
 - Массивы объектов (на любом уровне вложенности) → rowSections. НО: если объект содержит И массив, И плоские поля рядом — плоские поля ТОЖЕ включай в fields. Пример: {"properties": {"contents": [...], "currency": "USD", "value": 10}} → fields содержит properties__currency, properties__value, а rowSections содержит секцию properties__contents с её подполями. Нельзя пропускать плоские поля только потому, что рядом есть массив.
 - Если информации во фрагментах недостаточно для ответа — скажи об этом
@@ -628,6 +630,33 @@ export async function sendChatMessage(session, userMessage, languages = ['en'], 
           finalRowSections.push(section);
           sectionCodes.add(path);
         }
+      }
+
+      // Авто-дополнение: добавляем листовые скалярные поля из sourceJson, пропущенные AI.
+      // Типичный случай: data.type рядом с data.attributes в JSON:API структурах.
+      if (sourceJson && typeof sourceJson === 'object' && cleanedFields.length > 0) {
+        const existingCodes = new Set(cleanedFields.map(f => f.data?.code).filter(Boolean));
+        const isWriteMethod = detectedEndpointSchema && ['POST', 'PUT', 'PATCH'].includes(detectedEndpointSchema.method);
+        const addMissingLeaf = (obj, prefix) => {
+          for (const [key, value] of Object.entries(obj)) {
+            const code = prefix ? `${prefix}__${key}` : key;
+            if (Array.isArray(value)) {
+              // массивы обрабатываются через rowSections
+            } else if (value !== null && typeof value === 'object') {
+              addMissingLeaf(value, code);
+            } else if (!existingCodes.has(code) && !sectionCodes.has(code)) {
+              const title = key.replace(/_/g, ' ');
+              const field = { id: null, versionId: null, data: { code, valueType: inferValueType(value), required: false, isEditable: !!isWriteMethod } };
+              for (const lang of languages) {
+                const tKey = lang === 'en' ? 'titleEn' : lang === 'ru' ? 'titleRu' : `title${lang.charAt(0).toUpperCase()}${lang.slice(1)}`;
+                field[tKey] = title;
+              }
+              cleanedFields.push(field);
+              existingCodes.add(code);
+            }
+          }
+        };
+        addMissingLeaf(sourceJson, '');
       }
 
       // Восстанавливаем натуральный порядок полей по позиции ключей в sourceJson
