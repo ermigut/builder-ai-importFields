@@ -61,7 +61,7 @@ This is a full-stack tool that automates the creation of **Albato** integration 
   data: { code, valueType, required, isEditable },
   titleEn, titleRu, hintEn, hintRu
 }
-// valueType: 1=string, 2=number, 3=bool, 5=datetime, 8=date, 99=array-section
+// valueType: 1=string, 2=integer, 3=float, 9=bool, 5=datetime, 8=date, 99=array-section
 ```
 
 ### Key Design Decisions

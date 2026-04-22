@@ -19,7 +19,7 @@ const MAX_CHUNK_CHARS = 20000; // Максимальная длина чанка
  * @returns {Array<{text: string, chunkIndex: number, endpoint?: string, sectionTitle?: string}>}
  */
 export function chunkDocument(docContent) {
-  if (docContent.isOpenAPI && docContent.endpoints?.length > 0) {
+  if ((docContent.isOpenAPI || docContent.isPostman) && docContent.endpoints?.length > 0) {
     return chunkOpenAPI(docContent);
   }
   return chunkGenericText(docContent.rawText);

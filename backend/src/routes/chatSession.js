@@ -76,11 +76,16 @@ router.post('/upload', upload.single('file'), async (req, res, next) => {
           await upsertChunks(docHash, splitChunks, vectors, docContent.sourceType);
           logAiOperation('Upload: документ проиндексирован', { docHash: docHash.slice(0, 8), chunks: splitChunks.length });
 
-          // Определяем вводный чанк (базовый URL, общая информация, авторизация)
-          const introIdx = splitChunks.findIndex(c =>
-            /https?:\/\/.*api\/|общая информация|base url|authorization|аутентификация|authentication/i.test(c.text)
-          );
-          session.introChunkIndex = introIdx >= 0 ? introIdx : 0;
+          // Для структурированных документов (Postman/OpenAPI) каждый чанк — отдельный эндпоинт,
+          // концепция "вводного чанка" не применима: ставим -1 чтобы не тянуть лишние чанки.
+          if (docContent.isOpenAPI || docContent.isPostman) {
+            session.introChunkIndex = -1;
+          } else {
+            const introIdx = splitChunks.findIndex(c =>
+              /https?:\/\/.*api\/|общая информация|base url|authorization|аутентификация|authentication/i.test(c.text)
+            );
+            session.introChunkIndex = introIdx >= 0 ? introIdx : 0;
+          }
         }
       } else if (docHash) {
         logAiOperation('Upload: документ уже проиндексирован (дедупликация)', { docHash: docHash.slice(0, 8) });
@@ -101,6 +106,8 @@ router.post('/upload', upload.single('file'), async (req, res, next) => {
     let summary = `Документ загружен (${docContent.sourceType}).`;
     if (docContent.isOpenAPI) {
       summary = `OpenAPI спецификация. Найдено эндпоинтов: ${docContent.endpoints.length}.`;
+    } else if (docContent.isPostman) {
+      summary = `Postman-коллекция. Найдено эндпоинтов: ${docContent.endpoints.length}.`;
     } else if (docContent.rawText) {
       const lines = docContent.rawText.split('\n').filter(l => l.trim()).length;
       summary += ` Строк текста: ${lines}.`;
@@ -380,19 +387,22 @@ router.post('/message', async (req, res, next) => {
         const queryVector = await embedText(message);
         const searchResults = await searchChunks(session.docHash, queryVector, topK);
 
-        // Всегда включаем вводные чанки (базовый URL, авторизация, общие правила).
-        // introChunkIndex определяется при загрузке (чанк с URL-паттерном или "Общая информация").
+        // Включаем вводные чанки только для неструктурированных документов (PDF, текст).
+        // Для OpenAPI/Postman introChunkIndex = -1 — чанки не добавляем.
         const introIdx = session.introChunkIndex ?? 0;
-        const intro = await getIntroChunks(session.docHash, introIdx);
         const searchIds = new Set(searchResults.map(c => c.chunkIndex));
-        const uniqueIntro = intro.filter(c => !searchIds.has(c.chunkIndex));
+        let uniqueIntro = [];
+        if (introIdx >= 0) {
+          const intro = await getIntroChunks(session.docHash, introIdx);
+          uniqueIntro = intro.filter(c => !searchIds.has(c.chunkIndex));
+        }
 
         // Если нашли конкретный эндпоинт — добавляем его контекст
         // Для POST/PUT/PATCH: только requestBody (не грузим AI лишним response ~29K символов)
         // Для GET: только responseSchema (это основной источник полей)
         let endpointContextChunks = [];
         // detectedEndpointSchema определена выше, за пределами try
-        if (detectedEndpoint && session.docContent?.isOpenAPI) {
+        if (detectedEndpoint && (session.docContent?.isOpenAPI || session.docContent?.isPostman)) {
           const allEndpoints = session.docContent.endpoints;
           const matchedEp = allEndpoints.find(ep =>
             ep.method === detectedEndpoint.method && ep.path === detectedEndpoint.path
