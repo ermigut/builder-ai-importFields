@@ -14,6 +14,53 @@ const MODEL = 'gpt-4o-mini';
 const MAX_DOC_CHARS = 80000; // Макс. длина контекста документации
 const CHAT_BATCH_SIZE = 40; // Макс. листовых полей до батчинга (аналог FIELDS_BATCH_SIZE в aiClient)
 
+// Получает значение из объекта по пути вида "a__b__c" (двойные подчёркивания как разделитель)
+function getValueByPath(obj, path) {
+  if (!obj || !path) return undefined;
+  let current = obj;
+  for (const part of path.split('__')) {
+    if (current === null || typeof current !== 'object') return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+// Обходит объект в глубину и возвращает пути к массивам объектов: [{path, element}]
+function findArrayOfObjectPaths(obj, prefix = '') {
+  const result = [];
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return result;
+  for (const [key, value] of Object.entries(obj)) {
+    const path = prefix ? `${prefix}__${key}` : key;
+    if (Array.isArray(value) && value.length > 0 && value[0] !== null && typeof value[0] === 'object') {
+      result.push({ path, element: value[0] });
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      result.push(...findArrayOfObjectPaths(value, path));
+    }
+  }
+  return result;
+}
+
+// Строит порядковый индекс ключей из объекта (DFS) для сортировки полей
+function buildNaturalOrderMap(obj, prefix = '', map = new Map()) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return map;
+  for (const [key, value] of Object.entries(obj)) {
+    const path = prefix ? `${prefix}__${key}` : key;
+    if (!map.has(path)) map.set(path, map.size);
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      buildNaturalOrderMap(value, path, map);
+    }
+  }
+  return map;
+}
+
+// Выводит тип Albato из значения JSON
+function inferValueType(v) {
+  if (v === null || typeof v === 'string') return 1;
+  if (typeof v === 'boolean') return 9;
+  if (typeof v === 'number') return Number.isInteger(v) ? 2 : 3;
+  return 1;
+}
+
 /**
  * Извлекает информацию о базовом URL API из текста документации.
  * Ищет паттерны: "https://...api/...", "Base URL:", серверные URL и т.д.
@@ -98,7 +145,10 @@ ${docText}
 - Если пользователь пишет имя метода (например "Создать контакт" или "POST /contacts") — сгенерируй поля
 - Если пользователь просит список методов — перечисли доступные эндпоинты
 - Анализируй разделы "Request parameters", "Body Params", "Response" и т.д.
-- Пустые массивы и объекты не обрабатывай
+- Значение null в теле запроса — это заменитель переменной шаблона (например {{variable}}), поле реальное и его надо включать
+- Вложенные объекты (например context, properties, app, device, user и т.д.) — всегда разворачивай рекурсивно, создавая поля для каждого листового свойства
+- Массивы объектов (на любом уровне вложенности) → rowSections. НО: если объект содержит И массив, И плоские поля рядом — плоские поля ТОЖЕ включай в fields. Пример: {"properties": {"contents": [...], "currency": "USD", "value": 10}} → fields содержит properties__currency, properties__value, а rowSections содержит секцию properties__contents с её подполями. Нельзя пропускать плоские поля только потому, что рядом есть массив.
+- Пустые массивы [] и объекты {} (без ключей) — не обрабатывай; объекты с ключами — обрабатывай всегда
 - Кастомные поля (customFields, cfs и т.д.) — игнорируй`;
 }
 
@@ -123,7 +173,7 @@ function buildRagSystemPrompt(chunks, docContent, languages = ['en']) {
 
   // Сводка по документу (тип + количество эндпоинтов если OpenAPI)
   let docMeta = `Тип документа: ${docContent.sourceType || 'unknown'}`;
-  if (docContent.isOpenAPI && docContent.endpoints?.length) {
+  if ((docContent.isOpenAPI || docContent.isPostman) && docContent.endpoints?.length) {
     docMeta += `. Всего эндпоинтов в документации: ${docContent.endpoints.length}`;
     docMeta += `.\nСписок всех эндпоинтов:\n`;
     docMeta += docContent.endpoints.map(ep =>
@@ -175,10 +225,11 @@ ${chunksText}
 - Если пользователь пишет имя метода (например "Создать контакт" или "POST /contacts") — сгенерируй поля
 - Если пользователь просит список методов — используй список эндпоинтов выше
 - При генерации полей ВСЕГДА анализируй структуру "Request Body" — это ключевой источник полей для создания/обновления
-- Если в Request Body есть объект "data" с вложенными полями — создавай поля на основе ВСЕХ его свойств
-- Обращай внимание на массивы объектов — они идут в rowSections, а не в fields
+- Вложенные объекты (например context, properties, app, device, user, ad и т.д.) — ОБЯЗАТЕЛЬНО разворачивай рекурсивно, создавая поля для каждого листового свойства
+- Значение null в теле запроса — заменитель переменной-шаблона ({{variable}}), поле реальное и его надо включать
+- Массивы объектов (на любом уровне вложенности) → rowSections. НО: если объект содержит И массив, И плоские поля рядом — плоские поля ТОЖЕ включай в fields. Пример: {"properties": {"contents": [...], "currency": "USD", "value": 10}} → fields содержит properties__currency, properties__value, а rowSections содержит секцию properties__contents с её подполями. Нельзя пропускать плоские поля только потому, что рядом есть массив.
 - Если информации во фрагментах недостаточно для ответа — скажи об этом
-- Пустые массивы и объекты не обрабатывай
+- Пустые массивы [] и объекты {} (без ключей) — не обрабатывай; объекты с ключами — обрабатывай всегда
 - Кастомные поля (customFields, cfs и т.д.) — игнорируй`;
 }
 
@@ -511,10 +562,88 @@ export async function sendChatMessage(session, userMessage, languages = ['en'], 
         detectedPathToArray = (typeof parsed.pathToArray === 'string') ? parsed.pathToArray : null;
       }
 
+      // Демотирование: если AI поместил объект (не массив) в rowSections,
+      // возвращаем его поля обратно в fields[].
+      // Используем schema из detectedEndpointSchema как источник истины.
+      const sourceJson = detectedEndpointSchema?.schema;
+      let finalRowSections = parsed.rowSections || [];
+      let demotedFields = [];
+      if (sourceJson && typeof sourceJson === 'object' && finalRowSections.length > 0) {
+        const validSections = [];
+        for (const section of finalRowSections) {
+          const code = section.data?.code;
+          if (!code) { validSections.push(section); continue; }
+          const value = getValueByPath(sourceJson, code);
+          if (Array.isArray(value)) {
+            // Настоящий массив → оставляем rowSection как есть
+            validSections.push(section);
+          } else if (value && typeof value === 'object') {
+            // Объект → демотируем все поля в flat fields
+            demotedFields.push(...(section.fields || []));
+          }
+        }
+        finalRowSections = validSections;
+      }
+
+      // Убираем из fields[] элементы, код которых совпадает с кодом секции в rowSections[]
+      // (AI иногда добавляет массив и как обычное поле, и как rowSection одновременно)
+      const sectionCodes = new Set(
+        finalRowSections.map(s => s.data?.code).filter(Boolean)
+      );
+      const seenFieldCodes = new Set();
+      const cleanedFields = [
+        ...(parsed.fields || []).filter(f => !sectionCodes.has(f.data?.code)),
+        ...demotedFields,
+      ].filter(f => {
+        const code = f.data?.code;
+        if (!code || seenFieldCodes.has(code)) return false;
+        seenFieldCodes.add(code);
+        return true;
+      });
+
+      // Авто-промоция: если в sourceJson есть массивы объектов, для которых AI не создал rowSection —
+      // создаём их из структуры первого элемента массива
+      if (sourceJson && typeof sourceJson === 'object') {
+        for (const { path, element } of findArrayOfObjectPaths(sourceJson)) {
+          if (sectionCodes.has(path)) continue;
+          // Удаляем скалярное поле с этим кодом из fields[] если есть
+          const scalarIdx = cleanedFields.findIndex(f => f.data?.code === path);
+          if (scalarIdx >= 0) cleanedFields.splice(scalarIdx, 1);
+          // Строим поля секции из первого элемента массива
+          const sectionFields = Object.entries(element).map(([k, v]) => {
+            const code = `${path}__${k}`;
+            const title = k.replace(/_/g, ' ');
+            const field = { id: null, versionId: null, data: { code, valueType: inferValueType(v), required: false, isEditable: true } };
+            for (const lang of languages) {
+              field[lang === 'en' ? 'titleEn' : lang === 'ru' ? 'titleRu' : `title${lang.charAt(0).toUpperCase()}${lang.slice(1)}`] = title;
+            }
+            return field;
+          });
+          const sectionTitle = path.split('__').pop().replace(/_/g, ' ');
+          const section = { id: null, versionId: null, data: { code: path, customFieldsIsEditable: false, customFieldsIsRequired: false } };
+          for (const lang of languages) {
+            section[lang === 'en' ? 'titleEn' : lang === 'ru' ? 'titleRu' : `title${lang.charAt(0).toUpperCase()}${lang.slice(1)}`] = sectionTitle;
+          }
+          section.fields = sectionFields;
+          finalRowSections.push(section);
+          sectionCodes.add(path);
+        }
+      }
+
+      // Восстанавливаем натуральный порядок полей по позиции ключей в sourceJson
+      if (sourceJson && typeof sourceJson === 'object' && cleanedFields.length > 0) {
+        const orderMap = buildNaturalOrderMap(sourceJson);
+        cleanedFields.sort((a, b) => {
+          const ai = orderMap.get(a.data?.code) ?? 9999;
+          const bi = orderMap.get(b.data?.code) ?? 9999;
+          return ai - bi;
+        });
+      }
+
       return {
         text: 'Поля сгенерированы.',
-        fields: parsed.fields || [],
-        rowSections: parsed.rowSections || [],
+        fields: cleanedFields,
+        rowSections: finalRowSections,
         request: parsed.request || null,
         pathToArray: detectedPathToArray,
       };

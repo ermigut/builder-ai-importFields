@@ -77,6 +77,11 @@ async function parseJSON(content) {
     return parseOpenAPISpec(parsed);
   }
 
+  // Проверяем, является ли это Postman-коллекцией
+  if (isPostmanCollection(parsed)) {
+    return parsePostmanCollection(parsed);
+  }
+
   return {
     rawText: JSON.stringify(parsed, null, 2),
     isOpenAPI: false,
@@ -165,6 +170,127 @@ function parseText(content, filename) {
 function isOpenAPISpec(obj) {
   if (!obj || typeof obj !== 'object') return false;
   return !!(obj.openapi || obj.swagger);
+}
+
+/**
+ * Проверяет, является ли объект Postman-коллекцией
+ */
+function isPostmanCollection(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  return !!(
+    obj.info && obj.item && Array.isArray(obj.item) &&
+    (obj.info._postman_id || (typeof obj.info.schema === 'string' && obj.info.schema.includes('getpostman.com')))
+  );
+}
+
+/**
+ * Рекурсивно собирает все запросы из дерева item[] Postman-коллекции.
+ * Возвращает плоский массив { name, method, url, rawBody, parsedBody }.
+ */
+function collectPostmanRequests(items, folderPath = '') {
+  const requests = [];
+  if (!Array.isArray(items)) return requests;
+
+  for (const item of items) {
+    if (item.item && Array.isArray(item.item)) {
+      // Папка — рекурсируем
+      const prefix = folderPath ? `${folderPath} / ${item.name}` : item.name;
+      requests.push(...collectPostmanRequests(item.item, prefix));
+    } else if (item.request) {
+      const req = item.request;
+      const method = (req.method || 'GET').toUpperCase();
+      const url = typeof req.url === 'string' ? req.url : (req.url?.raw || '');
+      const name = item.name || '';
+
+      let rawBody = null;
+      let parsedBody = null;
+      if (req.body?.mode === 'raw' && req.body.raw) {
+        rawBody = req.body.raw;
+        // Заменяем {{variable}} на null чтобы получить валидный JSON
+        const sanitized = rawBody.replace(/\{\{[^}]+\}\}/g, 'null');
+        try {
+          parsedBody = JSON.parse(sanitized);
+        } catch (_) {
+          // тело не JSON, оставляем как строку
+        }
+      }
+
+      requests.push({ name, folder: folderPath, method, url, rawBody, parsedBody });
+    }
+  }
+  return requests;
+}
+
+/**
+ * Рекурсивно строит текстовое описание JSON-структуры (для отображения полей тела запроса).
+ * Возвращает строку с отступами.
+ */
+function describeJsonStructure(obj, indent = '    ') {
+  if (obj === null || obj === undefined) return `${indent}null`;
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return `${indent}[]`;
+    return `${indent}[\n${describeJsonStructure(obj[0], indent + '  ')}\n${indent}]`;
+  }
+  if (typeof obj === 'object') {
+    const lines = [];
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== null && typeof value === 'object') {
+        lines.push(`${indent}${key}:`);
+        lines.push(describeJsonStructure(value, indent + '  '));
+      } else {
+        lines.push(`${indent}${key}: ${JSON.stringify(value)}`);
+      }
+    }
+    return lines.join('\n');
+  }
+  return `${indent}${JSON.stringify(obj)}`;
+}
+
+/**
+ * Парсинг Postman-коллекции — извлечение эндпоинтов в структурированный вид
+ */
+function parsePostmanCollection(collection) {
+  const requests = collectPostmanRequests(collection.item);
+  const info = collection.info || {};
+
+  let rawText = `API Collection: ${info.name || 'Unknown'}\n\n`;
+  rawText += `Endpoints (${requests.length}):\n\n`;
+
+  const endpoints = [];
+
+  for (const req of requests) {
+    const folder = req.folder ? `[${req.folder}] ` : '';
+    rawText += `${req.method} ${req.url} — ${folder}${req.name}\n`;
+
+    const endpoint = {
+      path: req.url.replace(/\{\{[^}]+\}\}/g, '{var}'),
+      method: req.method,
+      summary: req.name,
+      description: req.folder || '',
+      operationId: req.name,
+      parameters: [],
+      requestBody: null,
+      responseSchema: null,
+    };
+
+    if (req.parsedBody) {
+      rawText += `  Request Body:\n${describeJsonStructure(req.parsedBody)}\n`;
+      endpoint.requestBody = req.parsedBody;
+    } else if (req.rawBody) {
+      rawText += `  Request Body (raw):\n    ${req.rawBody.substring(0, 500)}\n`;
+    }
+
+    rawText += '\n';
+    endpoints.push(endpoint);
+  }
+
+  return {
+    rawText,
+    isOpenAPI: false,
+    isPostman: true,
+    endpoints,
+    sourceType: 'postman',
+  };
 }
 
 /**
