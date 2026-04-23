@@ -525,6 +525,32 @@ export async function sendChatMessage(session, userMessage, languages = ['en'], 
 2. ВАЖНО — источник полей: Генерируй поля (fields[]) на основе ПОЛЕЙ ОТВЕТА (response body), а именно на основе свойств объектов ВНУТРИ массива данных (pathToArray). Параметры запроса (query params, headers) НЕ включай в fields[]. Все сгенерированные поля должны иметь isEditable: false (это данные ответа, а не вводимые параметры).
    Пример: если response содержит data: [{ Id: 0, Name: "string", Email: "string" }], генерируй поля Id, Name, Email — а НЕ query-параметры limit, page, sort, filter.`;
   }
+  // Для небольших схем (не батч) подсказываем AI точные коды полей — так же как батч-режим.
+  // Это предотвращает пропуск полей (data.type) и неправильные пути секций.
+  if (detectedEndpointSchema?.schema && !considerArrayPath) {
+    const collectCodes = (obj, prefix = '', regular = [], arrays = []) => {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { regular, arrays };
+      for (const [key, value] of Object.entries(obj)) {
+        const code = prefix ? `${prefix}__${key}` : key;
+        if (Array.isArray(value) && value.length > 0 && value[0] !== null && typeof value[0] === 'object') {
+          arrays.push(code);
+        } else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+          collectCodes(value, code, regular, arrays);
+        } else if (!Array.isArray(value)) {
+          regular.push(code);
+        }
+      }
+      return { regular, arrays };
+    };
+    const { regular: regularCodes, arrays: arrayCodes } = collectCodes(detectedEndpointSchema.schema);
+    if (regularCodes.length > 0) {
+      finalUserMessage += `\n\nОБЯЗАТЕЛЬНЫЕ КОДЫ для fields[] (используй ТОЛЬКО эти, точно как написано): ${regularCodes.join(', ')}`;
+    }
+    if (arrayCodes.length > 0) {
+      finalUserMessage += `\nМАССИВЫ ОБЪЕКТОВ → rowSections (ТОЛЬКО эти коды): ${arrayCodes.join(', ')}`;
+    }
+  }
+
   messages.push({ role: 'user', content: finalUserMessage });
 
   logAiOperation('Chat: запрос к AI', {
@@ -587,14 +613,16 @@ export async function sendChatMessage(session, userMessage, languages = ['en'], 
         finalRowSections = validSections;
       }
 
-      // Убираем из fields[] элементы, код которых совпадает с кодом секции в rowSections[]
-      // (AI иногда добавляет массив и как обычное поле, и как rowSection одновременно)
+      // Убираем из fields[] только сами коды секций (не детей — детей чистим после авто-промоции)
       const sectionCodes = new Set(
         finalRowSections.map(s => s.data?.code).filter(Boolean)
       );
       const seenFieldCodes = new Set();
       const cleanedFields = [
-        ...(parsed.fields || []).filter(f => !sectionCodes.has(f.data?.code)),
+        ...(parsed.fields || []).filter(f => {
+          const code = f.data?.code;
+          return code && !sectionCodes.has(code);
+        }),
         ...demotedFields,
       ].filter(f => {
         const code = f.data?.code;
@@ -629,6 +657,37 @@ export async function sendChatMessage(session, userMessage, languages = ['en'], 
           section.fields = sectionFields;
           finalRowSections.push(section);
           sectionCodes.add(path);
+        }
+      }
+
+      // После авто-промоции sectionCodes содержит ВСЕ секции (AI + авто).
+      // Удаляем из cleanedFields дочерние поля любой секции (in-place).
+      for (let i = cleanedFields.length - 1; i >= 0; i--) {
+        const code = cleanedFields[i].data?.code;
+        if (!code) continue;
+        for (const sc of sectionCodes) {
+          if (code.startsWith(sc + '__')) { cleanedFields.splice(i, 1); break; }
+        }
+      }
+
+      // Обогащаем заголовки дочерних полей rowSections из parsed.fields[] и demotedFields.
+      // AI иногда генерирует хорошие заголовки в fields[] или в демотированных секциях.
+      if (parsed.fields?.length > 0 || demotedFields.length > 0) {
+        const aiFieldMap = new Map(
+          [...(parsed.fields || []), ...demotedFields]
+            .filter(f => f.data?.code)
+            .map(f => [f.data.code, f])
+        );
+        for (const section of finalRowSections) {
+          for (const child of (section.fields || [])) {
+            const code = child.data?.code;
+            const aiField = code && aiFieldMap.get(code);
+            if (!aiField) continue;
+            for (const lang of languages) {
+              const tKey = lang === 'en' ? 'titleEn' : lang === 'ru' ? 'titleRu' : `title${lang.charAt(0).toUpperCase()}${lang.slice(1)}`;
+              if (aiField[tKey]) child[tKey] = aiField[tKey];
+            }
+          }
         }
       }
 
